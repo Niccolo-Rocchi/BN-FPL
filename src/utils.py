@@ -7,6 +7,7 @@ import cvxpy as cp
 import hopsy
 import numpy as np
 import pyagrum as gum
+import pandas as pd
 
 from src.config import safe_assert
 
@@ -17,44 +18,69 @@ def get_bn_counts(bn, data):
     # Init the BN
     bn_counts = gum.BayesNet(bn)
 
-    # For each node ...
     for node in bn.names():
 
-        # ... create the CPT storing counts of events
-        counts = []
+        cpt = bn.cpt(node)
 
-        n_parents = len(bn.parents(node))
-        if n_parents != 0:
-            cpt = bn.cpt(node).topandas().reset_index()
-            parents = [str(x[0]) for x in cpt.columns[:n_parents]]
-            cpt.columns = parents + list(cpt[node].columns)
-            domain = [int(x) for x in cpt.columns[n_parents:]]
+        if len(bn.parents(node)) != 0:
+            var_size = bn.variable(node).domainSize()
+            n_rows = cpt.domainSize() // var_size
 
-            for idx in range(len(cpt)):
-                counts_cond = []
-                query = dict(cpt.iloc[idx, :n_parents])
-                query_str = " & ".join([f"{k}=={v}" for k, v in query.items()])
-                data_cond = data.query(query_str)
-                for node_val in domain:
-                    counts_cond.append(len(data_cond[data_cond[node] == node_val]))
-                counts.append(counts_cond)
+            index = cpt.topandas().index
+            index_df = index.to_frame(index=False)
 
-                # Debug
-                safe_assert(sum(counts_cond) == len(data_cond))
+            subset=index_df.columns.tolist()
+            data_counts = data.value_counts(subset=subset).reset_index(name='counts')
+            res = pd.merge(index_df, data_counts, on=subset, how='left')
+            res['counts'] = res['counts'].fillna(0).astype(int)
+
+            cpt_resh = cpt[:].reshape(n_rows, var_size)
+            cpt_new = np.round(cpt_resh * np.atleast_2d(res["counts"]).T)
 
         else:
-            domain = [x[1] for x in bn.cpt(node).topandas().index]
-            for node_val in domain:
-                counts.append(len(data[data[node] == node_val]))
+            cpt_new = np.round(cpt[:] * len(data))
 
-        counts = np.array(counts).flatten()
-        bn_counts.cpt(node).fillWith(counts.tolist())
+        bn_counts.cpt(node).fillWith(cpt_new.flatten().tolist())
 
         # Debug
-        safe_assert(sum(counts) == len(data))
+        safe_assert(np.sum(cpt_new) == len(data))
 
     return bn_counts
 
+# Get a bidimensional CPT
+def get_tabular_cpt(cpt) -> np.array:
+
+    cpt = np.atleast_2d(cpt[:])
+    if len(cpt.shape) == 2: return cpt
+
+    var_size, n_rows = get_cpt_shape(cpt)
+
+    return cpt.reshape(n_rows, var_size)
+
+# Get the shape of a BN's CPT
+def get_cpt_shape(cpt) -> tuple:
+
+    cpt = np.atleast_2d(cpt[:])
+    var_size = cpt.shape[0]
+    n_rows = np.prod(cpt.shape[1:]).astype(int)
+
+    return var_size, n_rows
+
+# Find the index in a CPT corresponding to a specific configuration of the parents
+def find_cpt_index(bn: gum.BayesNet, var:str, parents:dict = None):
+
+    ''' 
+    Notice: the CPT is thought as a bidimensional matrix.
+    '''
+    if parents is None: return 0
+    index = bn.cpt(var).topandas().index
+    index_df = index.to_frame(index=False)
+    query_str = " and ".join([f"{col} == @parents['{col}']" for col in parents])
+    res_query = index_df.query(query_str)
+    if res_query.empty: 
+        raise RuntimeError(f"Wrong parent configuration for variable '{var}'.")
+    
+    return res_query.index[0]
 
 # Get the BN inside a CN with max entropy distribution
 def maxent_cn(bn_min, bn_max) -> gum.BayesNet:
