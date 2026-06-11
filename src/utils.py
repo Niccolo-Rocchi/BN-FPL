@@ -51,7 +51,7 @@ def get_bn_counts(bn, data):
 def get_tabular_cpt(cpt) -> np.array:
 
     cpt = np.atleast_2d(cpt[:])
-    if len(cpt.shape) == 2: return cpt
+    if cpt.ndim == 2: return cpt
 
     var_size, n_rows = get_cpt_shape(cpt)
 
@@ -67,7 +67,7 @@ def get_cpt_shape(cpt) -> tuple:
     return var_size, n_rows
 
 # Find the index in a CPT corresponding to a specific configuration of the parents
-def find_cpt_index(bn: gum.BayesNet, var:str, parents:dict = None):
+def get_cpt_index(bn: gum.BayesNet, var:str, parents:dict = None):
 
     ''' 
     Notice: the CPT is thought as a bidimensional matrix.
