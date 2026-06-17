@@ -24,7 +24,7 @@ def test_resample_bn_params():
 
 
 
-def test_update_cset():
+def test_update_cn_cpt():
 
     set_seed()
     bn_base = gum.fastBN(f"X<-Y->W->Z; X->Z")
@@ -50,6 +50,11 @@ def test_update_cset():
 
         # Collect
         clients[e] = client
+
+
     for e in range(len(clients)):
-        assert(np.allclose(clients[e].get_cset("Y"), clients[e].update_cset("Y", prior=(np.array([0., 0.]), np.array([1.,1.])))))
-        assert(np.allclose(clients[e].get_cset("X"), clients[e].update_cset("X", (np.array([[0., 0.],[0., 0.]]), np.array([[1.,1.],[1.,1.]])))))
+        c = clients[e]
+        c.mosaic_cn()  # vacuous prior
+
+        for var in c.bn.names():
+            assert(np.allclose([x.flatten() for x in c.get_cset(var)], [x.flatten() for x in c.cn_mosaic.cpt(var)]))    #TODO: check array shapes, must be consistent

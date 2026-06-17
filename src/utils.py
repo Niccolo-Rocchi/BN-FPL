@@ -11,6 +11,21 @@ import pandas as pd
 
 from src.config import safe_assert
 
+# Define a vacuous CN based on a given BN
+def vac_cn(bn: gum.BayesNet):
+
+    bn_min = gum.BayesNet(bn)
+    bn_max = gum.BayesNet(bn)
+
+    for n in bn.nodes():
+        bn_min.cpt(n).fillWith(0)
+        bn_max.cpt(n).fillWith(1)
+
+    cn = gum.CredalNet(bn_min, bn_max)
+    cn.intervalToCredal()
+    
+    return cn
+
 # Resample BN parameters with probability `prob`
 def resample_bn_params(bn: gum.BayesNet, alpha: float = 1.0, prob: float = 1.0) -> gum.BayesNet:
     """
@@ -51,13 +66,13 @@ def resample_bn_params(bn: gum.BayesNet, alpha: float = 1.0, prob: float = 1.0) 
     return bn_new, bn_mask
 
 # Compute the KL between a cset and the ground-truth distribution
-def get_kl_cset(client, var, parents, cset: tuple):
+def get_kl_cset(client, var, parents, cn: tuple):
 
     '''
     Let X|\pa_X be a conditional distribution. 
     The function returns the KL between a credal set and the ground-truth.
     The KL is computed as the maximum KL over the vertices of the cset.
-    `cset` is a tuple of (cset_min, cset_max).
+    `cn` is a tuple of (bn_min, bn_max).
     '''
 
     # Get the ground-truth distribution
@@ -68,8 +83,10 @@ def get_kl_cset(client, var, parents, cset: tuple):
     t_gt = gum.Tensor(var_obj)
     t_gt.fillWith(gt_distr_smoothed)
 
-    # Get the vertioces of the cset
-    cset_min, cset_max = cset
+    # Get the vertices of the cset
+    bn_min, bn_max = cn
+    cpt_min, cpt_max = get_tabular_cpt(bn_min.cpt(var)), get_tabular_cpt(bn_max.cpt(var))
+    cset_min, cset_max = cpt_min[parents_idx, :], cpt_max[parents_idx, :]
     vertices = vertices_cset(cset_min, cset_max).tolist()
 
     # For each vertex ...
@@ -168,7 +185,7 @@ def get_cpt_shape(cpt) -> tuple:
     return n_rows, var_size 
 
 # Get the index in a CPT corresponding to a specific configuration of the parents
-def get_cpt_index(bn: gum.BayesNet, var:str, parents:dict = None):
+def get_cpt_index(bn: gum.BayesNet, var:str, parents:dict):
 
     ''' 
     Notice: the CPT is thought as a bidimensional matrix.
