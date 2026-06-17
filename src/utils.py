@@ -11,6 +11,107 @@ import pandas as pd
 
 from src.config import safe_assert
 
+# Resample BN parameters with probability `prob`
+def resample_bn_params(bn: gum.BayesNet, alpha: float = 1.0, prob: float = 1.0) -> gum.BayesNet:
+    """
+    Copy the `bn` structure and resample its parameters from a Dirichlet distribution.
+    Here, `prob` is the probability that a conditional X|\pi_X is resampled.
+    The output is the resampled BN (`bn_new`) and a mask BN (`bn_mask`).
+    The latter indicates the differences between `bn` and `bn_new` (1 = equal, 0 = different).
+    """
+    bn_new = gum.BayesNet(bn)
+    bn_mask = gum.BayesNet(bn)
+
+    for node_id in bn_new.nodes():
+        cpt = bn_new.cpt(node_id)
+        var_size = bn_new.variable(node_id).domainSize()
+        n_rows = cpt.domainSize() // var_size
+
+        samples = np.random.dirichlet(
+            alpha=[alpha] * var_size,
+            size=n_rows
+        )
+
+        mask = np.ones(samples.shape)
+
+        for row in range(n_rows):
+            if np.random.choice([True, False], p=[prob, 1.0 - prob]):
+                mask[row, :] = 0
+
+        cpt_resh = cpt[:].reshape(n_rows, var_size)
+
+        cpt_new = mask*cpt_resh[:] + (1-mask) * samples
+
+        cpt.fillWith(cpt_new.flatten().tolist())
+        bn_mask.cpt(node_id).fillWith(mask.flatten().tolist())
+
+        # Debug
+        safe_assert(np.allclose(np.sum(cpt_resh, axis=1), 1))
+
+    return bn_new, bn_mask
+
+# Compute the KL between a cset and the ground-truth distribution
+def get_kl_cset(client, var, parents, cset: tuple):
+
+    '''
+    Let X|\pa_X be a conditional distribution. 
+    The function returns the KL between a credal set and the ground-truth.
+    The KL is computed as the maximum KL over the vertices of the cset.
+    `cset` is a tuple of (cset_min, cset_max).
+    '''
+
+    # Get the ground-truth distribution
+    var_obj = client.bn.variable(var)
+    parents_idx = get_cpt_index(client.gt, var, parents)
+    gt_distr = get_tabular_cpt(client.gt.cpt(var))[parents_idx, :]
+    gt_distr_smoothed = np.clip(gt_distr, 1e-12, None)
+    t_gt = gum.Tensor(var_obj)
+    t_gt.fillWith(gt_distr_smoothed)
+
+    # Get the vertioces of the cset
+    cset_min, cset_max = cset
+    vertices = vertices_cset(cset_min, cset_max).tolist()
+
+    # For each vertex ...
+    kl_list = []
+    for v in vertices:
+
+        # ... compute the KL against the ground-truth
+        t = gum.Tensor(var_obj)
+        v_smoothed = np.clip(v, 1e-12, None)
+        t.fillWith(v_smoothed)
+        kl_sym = ( t.KL(t_gt) + t_gt.KL(t) ) /2
+        kl_list.append(kl_sym)
+
+    # Get the maximum KL
+    return max(kl_list)
+
+# Compute the KL between the learned distribution and the ground-truth one
+def get_kl(client, var, parents):
+
+    '''
+    Let X|\pa_X be a conditional distribution. 
+    The function returns the KL between a given distribution X|\pa_X
+    and its ground-truth.
+    '''
+
+    # Get the ground-truth distribution
+    var_obj = client.bn.variable(var)
+    parents_idx = get_cpt_index(client.gt, var, parents)
+    gt_distr = get_tabular_cpt(client.gt.cpt(var))[parents_idx, :]
+    gt_distr_smoothed = np.clip(gt_distr, 1e-12, None)
+    t_gt = gum.Tensor(var_obj)
+    t_gt.fillWith(gt_distr_smoothed)
+
+    # Get the compared distribution
+    distr = get_tabular_cpt(client.bn.cpt(var))[parents_idx, :]
+    distr_smoothed = np.clip(distr, 1e-12, None)
+    t = gum.Tensor(var_obj)
+    t.fillWith(distr_smoothed)
+    
+    # Get the KL
+    kl_sym = ( t.KL(t_gt) + t_gt.KL(t) ) /2
+    return kl_sym
 
 # Create the BN storing the counts of events
 def get_bn_counts(bn, data):
@@ -53,20 +154,20 @@ def get_tabular_cpt(cpt) -> np.array:
     cpt = np.atleast_2d(cpt[:])
     if cpt.ndim == 2: return cpt
 
-    var_size, n_rows = get_cpt_shape(cpt)
+    n_rows, var_size = get_cpt_shape(cpt)
 
     return cpt.reshape(n_rows, var_size)
 
 # Get the shape of a BN's CPT
 def get_cpt_shape(cpt) -> tuple:
 
-    cpt = np.atleast_2d(cpt[:])
-    var_size = cpt.shape[0]
-    n_rows = np.prod(cpt.shape[1:]).astype(int)
+    cpt_arr = np.atleast_2d(cpt[:])
+    var_size = cpt_arr.shape[-1]
+    n_rows = np.prod(cpt_arr.shape[:-1])
 
-    return var_size, n_rows
+    return n_rows, var_size 
 
-# Find the index in a CPT corresponding to a specific configuration of the parents
+# Get the index in a CPT corresponding to a specific configuration of the parents
 def get_cpt_index(bn: gum.BayesNet, var:str, parents:dict = None):
 
     ''' 
