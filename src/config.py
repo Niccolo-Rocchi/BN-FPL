@@ -1,9 +1,9 @@
 import random
 import shutil
 import sys
-import numpy as np
 from pathlib import Path
 
+import numpy as np
 import pyagrum as gum
 
 IN_PYTEST = "pytest" in sys.modules

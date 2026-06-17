@@ -6,10 +6,11 @@ import cdd.gmp
 import cvxpy as cp
 import hopsy
 import numpy as np
-import pyagrum as gum
 import pandas as pd
+import pyagrum as gum
 
 from src.config import safe_assert
+
 
 # Define a vacuous CN based on a given BN
 def vac_cn(bn: gum.BayesNet):
@@ -23,11 +24,14 @@ def vac_cn(bn: gum.BayesNet):
 
     cn = gum.CredalNet(bn_min, bn_max)
     cn.intervalToCredal()
-    
+
     return cn
 
+
 # Resample BN parameters with probability `prob`
-def resample_bn_params(bn: gum.BayesNet, alpha: float = 1.0, prob: float = 1.0) -> gum.BayesNet:
+def resample_bn_params(
+    bn: gum.BayesNet, alpha: float = 1.0, prob: float = 1.0
+) -> gum.BayesNet:
     """
     Copy the `bn` structure and resample its parameters from a Dirichlet distribution.
     Here, `prob` is the probability that a conditional X|\pi_X is resampled.
@@ -42,10 +46,7 @@ def resample_bn_params(bn: gum.BayesNet, alpha: float = 1.0, prob: float = 1.0) 
         var_size = bn_new.variable(node_id).domainSize()
         n_rows = cpt.domainSize() // var_size
 
-        samples = np.random.dirichlet(
-            alpha=[alpha] * var_size,
-            size=n_rows
-        )
+        samples = np.random.dirichlet(alpha=[alpha] * var_size, size=n_rows)
 
         mask = np.ones(samples.shape)
 
@@ -55,7 +56,7 @@ def resample_bn_params(bn: gum.BayesNet, alpha: float = 1.0, prob: float = 1.0) 
 
         cpt_resh = cpt[:].reshape(n_rows, var_size)
 
-        cpt_new = mask*cpt_resh[:] + (1-mask) * samples
+        cpt_new = mask * cpt_resh[:] + (1 - mask) * samples
 
         cpt.fillWith(cpt_new.flatten().tolist())
         bn_mask.cpt(node_id).fillWith(mask.flatten().tolist())
@@ -65,15 +66,15 @@ def resample_bn_params(bn: gum.BayesNet, alpha: float = 1.0, prob: float = 1.0) 
 
     return bn_new, bn_mask
 
+
 # Compute the KL between a cset and the ground-truth distribution
 def get_kl_cset(client, var, parents, cn: tuple):
-
-    '''
-    Let X|\pa_X be a conditional distribution. 
+    """
+    Let X|\pa_X be a conditional distribution.
     The function returns the KL between a credal set and the ground-truth.
     The KL is computed as the maximum KL over the vertices of the cset.
     `cn` is a tuple of (bn_min, bn_max).
-    '''
+    """
 
     # Get the ground-truth distribution
     var_obj = client.bn.variable(var)
@@ -85,7 +86,9 @@ def get_kl_cset(client, var, parents, cn: tuple):
 
     # Get the vertices of the cset
     bn_min, bn_max = cn
-    cpt_min, cpt_max = get_tabular_cpt(bn_min.cpt(var)), get_tabular_cpt(bn_max.cpt(var))
+    cpt_min, cpt_max = get_tabular_cpt(bn_min.cpt(var)), get_tabular_cpt(
+        bn_max.cpt(var)
+    )
     cset_min, cset_max = cpt_min[parents_idx, :], cpt_max[parents_idx, :]
     vertices = vertices_cset(cset_min, cset_max).tolist()
 
@@ -97,20 +100,20 @@ def get_kl_cset(client, var, parents, cn: tuple):
         t = gum.Tensor(var_obj)
         v_smoothed = np.clip(v, 1e-12, None)
         t.fillWith(v_smoothed)
-        kl_sym = ( t.KL(t_gt) + t_gt.KL(t) ) /2
+        kl_sym = (t.KL(t_gt) + t_gt.KL(t)) / 2
         kl_list.append(kl_sym)
 
     # Get the maximum KL
     return max(kl_list)
 
+
 # Compute the KL between the learned distribution and the ground-truth one
 def get_kl(client, var, parents):
-
-    '''
-    Let X|\pa_X be a conditional distribution. 
+    """
+    Let X|\pa_X be a conditional distribution.
     The function returns the KL between a given distribution X|\pa_X
     and its ground-truth.
-    '''
+    """
 
     # Get the ground-truth distribution
     var_obj = client.bn.variable(var)
@@ -125,10 +128,11 @@ def get_kl(client, var, parents):
     distr_smoothed = np.clip(distr, 1e-12, None)
     t = gum.Tensor(var_obj)
     t.fillWith(distr_smoothed)
-    
+
     # Get the KL
-    kl_sym = ( t.KL(t_gt) + t_gt.KL(t) ) /2
+    kl_sym = (t.KL(t_gt) + t_gt.KL(t)) / 2
     return kl_sym
+
 
 # Create the BN storing the counts of events
 def get_bn_counts(bn, data):
@@ -147,10 +151,10 @@ def get_bn_counts(bn, data):
             index = cpt.topandas().index
             index_df = index.to_frame(index=False)
 
-            subset=index_df.columns.tolist()
-            data_counts = data.value_counts(subset=subset).reset_index(name='counts')
-            res = pd.merge(index_df, data_counts, on=subset, how='left')
-            res['counts'] = res['counts'].fillna(0).astype(int)
+            subset = index_df.columns.tolist()
+            data_counts = data.value_counts(subset=subset).reset_index(name="counts")
+            res = pd.merge(index_df, data_counts, on=subset, how="left")
+            res["counts"] = res["counts"].fillna(0).astype(int)
 
             cpt_resh = cpt[:].reshape(n_rows, var_size)
             cpt_new = np.round(cpt_resh * np.atleast_2d(res["counts"]).T)
@@ -165,15 +169,18 @@ def get_bn_counts(bn, data):
 
     return bn_counts
 
+
 # Get a bidimensional CPT
 def get_tabular_cpt(cpt) -> np.array:
 
     cpt = np.atleast_2d(cpt[:])
-    if cpt.ndim == 2: return cpt
+    if cpt.ndim == 2:
+        return cpt
 
     n_rows, var_size = get_cpt_shape(cpt)
 
     return cpt.reshape(n_rows, var_size)
+
 
 # Get the shape of a BN's CPT
 def get_cpt_shape(cpt) -> tuple:
@@ -182,23 +189,25 @@ def get_cpt_shape(cpt) -> tuple:
     var_size = cpt_arr.shape[-1]
     n_rows = np.prod(cpt_arr.shape[:-1])
 
-    return n_rows, var_size 
+    return n_rows, var_size
+
 
 # Get the index in a CPT corresponding to a specific configuration of the parents
-def get_cpt_index(bn: gum.BayesNet, var:str, parents:dict):
-
-    ''' 
+def get_cpt_index(bn: gum.BayesNet, var: str, parents: dict):
+    """
     Notice: the CPT is thought as a bidimensional matrix.
-    '''
-    if parents is None: return 0
+    """
+    if parents is None:
+        return 0
     index = bn.cpt(var).topandas().index
     index_df = index.to_frame(index=False)
     query_str = " and ".join([f"{col} == @parents['{col}']" for col in parents])
     res_query = index_df.query(query_str)
-    if res_query.empty: 
+    if res_query.empty:
         raise RuntimeError(f"Wrong parent configuration for variable '{var}'.")
-    
+
     return res_query.index[0]
+
 
 # Get the BN inside a CN with max entropy distribution
 def maxent_cn(bn_min, bn_max) -> gum.BayesNet:
@@ -815,7 +824,7 @@ def cpt_value(
 # Learn BN parameters from a given BN and data
 def learn_bn_params(bn, data):
 
-    bn_copy = gum.BayesNet(bn)    
+    bn_copy = gum.BayesNet(bn)
 
     learner = gum.BNLearner(data)
     learner.useSmoothingPrior(1e-10)
@@ -823,11 +832,12 @@ def learn_bn_params(bn, data):
 
     return bn_learnt
 
+
 # Extract a subgraph from a given BN
 def get_subgraph(bn, vars_to_keep: set):
 
     sub = gum.BayesNet(bn)
     for var in set(bn.names()) - vars_to_keep:
         sub.erase(var)
-    
+
     return sub
