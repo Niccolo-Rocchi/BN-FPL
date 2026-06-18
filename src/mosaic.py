@@ -1,12 +1,19 @@
 from __future__ import annotations
+from tenacity import retry, stop_after_attempt, wait_fixed
 
 import numpy as np
 import pyagrum as gum
 
 from src.config import safe_assert
-from src.utils import (get_bn_counts, get_cpt_index, get_cpt_shape,
-                       get_min_max_bns, get_tabular_cpt, learn_bn_params,
-                       vac_cn)
+from src.utils import (
+    get_bn_counts,
+    get_cpt_index,
+    get_cpt_shape,
+    get_min_max_bns,
+    get_tabular_cpt,
+    learn_bn_params,
+    vac_cn,
+)
 
 
 # Custom CN class
@@ -122,8 +129,8 @@ class PriorCPT(CN_CPT):
         self.method = None
         self.weighting = None
 
-    def set_clients(self, clients: list):
-        self.clients = clients
+    def set_clients(self, clients_list: list):
+        self.clients = clients_list
 
     def is_vacuous(self) -> bool:
 
@@ -142,8 +149,8 @@ class PriorCPT(CN_CPT):
             else:
                 cpts = np.zeros((2, *self.shape, len(self.clients)))
                 for i in range(len(self.clients)):
-                    client = self.clients[i]
-                    cpt_min, cpt_max = client.get_cset(self.var)
+                    c = self.clients[i]
+                    cpt_min, cpt_max = c.get_cset(self.var)
                     cpts[0, ..., i] = get_tabular_cpt(cpt_min)
                     cpts[1, ..., i] = get_tabular_cpt(cpt_max)
 
@@ -177,13 +184,13 @@ class PriorCN(CN):
         if self.cpts[var].clients is None:
             raise RuntimeError(f"Clients are not set for variable {var}.")
 
-        clients = self.cpts[var].clients
-        mask = get_tabular_cpt(clients[0].mask.cpt(var))
+        clients_list = self.cpts[var].clients
+        mask = get_tabular_cpt(clients_list[0].mask.cpt(var))
 
-        if len(clients) == 0:
+        if len(clients_list) == 0:
             pass
         else:
-            for c in clients[1:]:
+            for c in clients_list[1:]:
                 mask *= get_tabular_cpt(c.mask.cpt(var))
 
         return mask
@@ -206,20 +213,20 @@ class PriorCN(CN):
         return True
 
     # Compute a prior CPT
-    def compute_cpt(self, var: str, clients: list, method: str, weighting: str = None):
+    def compute_cpt(self, var: str, clients_list: list, method: str, weighting: str = None):
 
         # Compute the CPT
-        self.cpts[var].set_clients(clients)
+        self.cpts[var].set_clients(clients_list)
         result = self.cpts[var].compute(method, weighting)
 
         # Update the CPT
         self.update_cpt(var, result)
 
     # Compute all prior CPTs
-    def compute(self, clients: list, method: str, weighting: str = None):
+    def compute(self, clients_list: list, method: str, weighting: str = None):
 
         for var in self.names():
-            self.compute_cpt(var, clients, method, weighting)
+            self.compute_cpt(var, clients_list, method, weighting)
 
 
 # Class for a client
@@ -251,6 +258,9 @@ class Client:
         for a in attributes:
             if getattr(self, a) is None:
                 raise RuntimeError(f"Attribute '{a}' is missing.")
+            
+    def reset_prior(self):
+        self.prior_cn = PriorCN(self.gt)
 
     def generate_data(self, size: int) -> None:
         """
@@ -275,6 +285,7 @@ class Client:
         self.check(["data", "bn"])
         self.bn_counts = get_bn_counts(self.bn, self.data)
         cn = gum.CredalNet(self.bn_counts)
+
         cn.idmLearning(ess)
 
         self.ess = ess
