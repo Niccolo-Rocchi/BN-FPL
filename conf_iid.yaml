@@ -1,0 +1,13 @@
+## Configuration file (#TODO: tidy up)
+
+n_clients: 10
+client_num: 0
+s_sizes: 
+  min: 50
+  max: 700
+  step: 50
+ess: 1
+prior_args: '["ConvComb", "unif"]'
+
+bn_base_path: ./cancer.bif
+n_repetitions: 50

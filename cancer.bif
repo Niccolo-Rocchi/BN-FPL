@@ -1,0 +1,37 @@
+network cancer {
+}
+variable P {
+  type discrete [ 2 ] { low, high };
+}
+variable S {
+  type discrete [ 2 ] { True, False };
+}
+variable C {
+  type discrete [ 2 ] { True, False };
+}
+variable X {
+  type discrete [ 2 ] { positive, negative };
+}
+variable D {
+  type discrete [ 2 ] { True, False };
+}
+probability ( P ) {
+  table 0.9, 0.1;
+}
+probability ( S ) {
+  table 0.3, 0.7;
+}
+probability ( C | P, S ) {
+  (low, True) 0.03, 0.97;
+  (high, True) 0.05, 0.95;
+  (low, False) 0.001, 0.999;
+  (high, False) 0.02, 0.98;
+}
+probability ( X | C ) {
+  (True) 0.9, 0.1;
+  (False) 0.2, 0.8;
+}
+probability ( D | C ) {
+  (True) 0.65, 0.35;
+  (False) 0.3, 0.7;
+}

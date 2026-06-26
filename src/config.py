@@ -1,3 +1,4 @@
+import os
 import random
 import shutil
 import sys
@@ -5,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import pyagrum as gum
+import yaml
 
 IN_PYTEST = "pytest" in sys.modules
 
@@ -48,3 +50,12 @@ def get_root_path():
 def safe_assert(condition):
     if IN_PYTEST:
         assert condition
+
+
+# Read configuration for experiment
+def load_config(name: str):
+
+    with open(name, "r") as file:
+        config = yaml.safe_load(file)
+
+    return config

@@ -27,6 +27,41 @@ def vac_cn(bn: gum.BayesNet):
 
     return cn
 
+# Perturb BN parameters with probability `prob` and size `eps`
+def perturb_bn_params(bn: gum.BayesNet, eps: float, prob: float = 1.0) -> gum.BayesNet:
+    """
+    Each conditional X|\pi_X is perturbed with probability `prob`.
+    The perturbation is taken from a Normal(0, eps).
+    """
+    bn_new = gum.BayesNet(bn)
+    bn_mask = gum.BayesNet(bn)
+
+    for node_id in bn_new.nodes():
+        cpt_new = bn_new.cpt(node_id)
+        cpt_resh = get_tabular_cpt(cpt_new)
+
+        mask = np.ones(cpt_resh.shape)
+
+        for idx in range(cpt_resh.shape[0]):
+            if np.random.choice([True, False], p=[prob, 1.0 - prob]):
+                mask[idx, :] = 0
+
+                row = cpt_resh[idx, :]
+                row += np.random.normal(0, eps, len(row))
+                row = np.clip(row, 1e-12, None)
+                row /= np.sum(row)
+                cpt_resh[idx, :] = row
+
+        cpt_new.fillWith(cpt_resh.flatten())
+        bn_mask.cpt(node_id).fillWith(mask.flatten())
+
+        # Debug
+        safe_assert(np.allclose(np.sum(cpt_resh, axis=1), 1))
+
+    return bn_new, bn_mask
+
+
+
 
 # Resample BN parameters with probability `prob`
 def resample_bn_params(
@@ -68,18 +103,18 @@ def resample_bn_params(
 
 
 # Compute the KL between a cset and the ground-truth distribution
-def get_kl_cset(client, var, parents, cn: tuple):
+def get_kl_cset(cn: tuple, gt:gum.BayesNet, var, parents):
     """
     Let X|\pa_X be a conditional distribution.
-    The function returns the KL between a credal set and the ground-truth.
+    The function returns the KL between a credal set in `cn` and the ground-truth (in `gt`).
     The KL is computed as the maximum KL over the vertices of the cset.
     `cn` is a tuple of (bn_min, bn_max).
     """
 
     # Get the ground-truth distribution
-    var_obj = client.bn.variable(var)
-    parents_idx = get_cpt_index(client.gt, var, parents)
-    gt_distr = get_tabular_cpt(client.gt.cpt(var))[parents_idx, :]
+    var_obj = gt.variable(var)
+    parents_idx = get_cpt_index(gt, var, parents)
+    gt_distr = get_tabular_cpt(gt.cpt(var))[parents_idx, :]
     gt_distr_smoothed = np.clip(gt_distr, 1e-12, None)
     t_gt = gum.Tensor(var_obj)
     t_gt.fillWith(gt_distr_smoothed)
@@ -108,23 +143,23 @@ def get_kl_cset(client, var, parents, cn: tuple):
 
 
 # Compute the KL between the learned distribution and the ground-truth one
-def get_kl(client, var, parents):
+def get_kl(bn:gum.BayesNet, gt:gum.BayesNet, var, parents):
     """
     Let X|\pa_X be a conditional distribution.
     The function returns the KL between a given distribution X|\pa_X
-    and its ground-truth.
+    of a BN (`bn`) and its ground-truth (`gt`).
     """
 
     # Get the ground-truth distribution
-    var_obj = client.bn.variable(var)
-    parents_idx = get_cpt_index(client.gt, var, parents)
-    gt_distr = get_tabular_cpt(client.gt.cpt(var))[parents_idx, :]
+    var_obj = bn.variable(var)
+    parents_idx = get_cpt_index(gt, var, parents)
+    gt_distr = get_tabular_cpt(gt.cpt(var))[parents_idx, :]
     gt_distr_smoothed = np.clip(gt_distr, 1e-12, None)
     t_gt = gum.Tensor(var_obj)
     t_gt.fillWith(gt_distr_smoothed)
 
     # Get the compared distribution
-    distr = get_tabular_cpt(client.bn.cpt(var))[parents_idx, :]
+    distr = get_tabular_cpt(bn.cpt(var))[parents_idx, :]
     distr_smoothed = np.clip(distr, 1e-12, None)
     t = gum.Tensor(var_obj)
     t.fillWith(distr_smoothed)
@@ -169,6 +204,22 @@ def get_bn_counts(bn, data):
 
     return bn_counts
 
+# Get a list of (var, parents) configurations from a BN
+def get_confs(bn:gum.BayesNet) -> list:
+    confs = []
+    for var in bn.names():
+
+        # For every parent configuration ...
+        index_df = bn.cpt(var).topandas().index.to_frame(index=False)
+        parents_conf = (
+            [dict(index_df.iloc[i]) for i in range(len(index_df))]
+            if len(bn.parents(var)) != 0
+            else [None]
+        )
+        for parents in parents_conf:
+
+            confs.append([var, parents])
+    return confs
 
 # Get a bidimensional CPT
 def get_tabular_cpt(cpt) -> np.array:
@@ -827,7 +878,7 @@ def learn_bn_params(bn, data):
     bn_copy = gum.BayesNet(bn)
 
     learner = gum.BNLearner(data)
-    learner.useSmoothingPrior(1e-10)
+    learner.useSmoothingPrior(1e-6)
     bn_learnt = learner.learnParameters(bn_copy)
 
     return bn_learnt

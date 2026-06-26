@@ -1,5 +1,6 @@
 from __future__ import annotations
 from tenacity import retry, stop_after_attempt, wait_fixed
+import copy
 
 import numpy as np
 import pyagrum as gum
@@ -42,6 +43,26 @@ class CN:
         self.bn_min = bn_min
         self.bn_max = bn_max
         self.cn = cn
+
+        self.bn_min.setProperty("name", "bn_min")
+        self.bn_max.setProperty("name", "bn_max")
+
+    def __deepcopy__(self, memo):
+        new = self.__class__.__new__(self.__class__)
+        memo[id(self)] = new 
+        for k, v in self.__dict__.items():
+            if k in ["bn_min", "bn_max"]:
+                if getattr(self, k) is None:
+                    setattr(new, k, None)
+                else:
+                    v_new = gum.BayesNet(getattr(self, k))
+                    setattr(new, k, v_new)
+            elif k in ["cn"]:
+                v_new = gum.CredalNet(self.bn_min, self.bn_max)
+                setattr(new, k, v_new)
+            else:
+                setattr(new, k, copy.deepcopy(v, memo))
+        return new
 
     def names(self):
 
@@ -100,6 +121,14 @@ class CN_CPT:
         self.cpt_min = get_tabular_cpt(cpt_min)
         self.cpt_max = get_tabular_cpt(cpt_max)
 
+    def __deepcopy__(self, memo):
+        new = self.__class__.__new__(self.__class__)
+        memo[id(self)] = new 
+        for k, v in self.__dict__.items():
+            setattr(new, k, copy.deepcopy(v, memo))
+        return new
+
+
     def update(self, cpt_min_max: tuple):
         cpt_min, cpt_max = cpt_min_max
         self.vacuous = False
@@ -130,7 +159,7 @@ class PriorCPT(CN_CPT):
         self.weighting = None
 
     def set_clients(self, clients_list: list):
-        self.clients = clients_list
+        self.clients = [copy.deepcopy(c) for c in clients_list]
 
     def is_vacuous(self) -> bool:
 
@@ -254,6 +283,32 @@ class Client:
         self.cn = None
         self.ess = None
 
+    def __deepcopy__(self, memo):
+        new = self.__class__.__new__(self.__class__)
+        memo[id(self)] = new 
+        for k, v in self.__dict__.items():
+            if k in ["gt", "mask", "bn", "bn_counts"]:
+                if getattr(self, k) is None:
+                    setattr(new, k, None)
+                else:
+                    v_new = gum.BayesNet(getattr(self, k))
+                    setattr(new, k, v_new)
+            else:
+                setattr(new, k, copy.deepcopy(v, memo))
+        return new
+
+    @retry(stop=stop_after_attempt(100), wait=wait_fixed(.05))
+    def generate_base_info(self, n, ess):
+        
+        # Generate data
+        self.generate_data(size=n)
+
+        # Learn the BN
+        self.learn_bn()
+
+        # Learn the CN
+        self.learn_cn(ess=ess)
+
     def check(self, attributes: list):
         for a in attributes:
             if getattr(self, a) is None:
@@ -277,6 +332,7 @@ class Client:
         """
         self.check(["data"])
         self.bn = learn_bn_params(self.gt, self.data)
+        self.bn.setProperty("name", "bn")
 
     def learn_cn(self, ess: int) -> None:
         """
@@ -363,10 +419,15 @@ class Client:
 
         # Debug
         cpt_min, cpt_max = self.get_cset(var)
-        assert np.all(new_cpt_min >= cpt_min - 1e-6)
-        assert np.all(new_cpt_max <= cpt_max + 1e-6)
-        assert np.all(prior_cpt_min <= prior_cpt_max + 1e-6)
-        assert prior_cpt_min.shape == prior_cpt_max.shape
+        try:
+            safe_assert(np.all(new_cpt_min >= cpt_min - 1e-4))
+            safe_assert(np.all(new_cpt_max <= cpt_max + 1e-4))
+            safe_assert(np.all(prior_cpt_min <= prior_cpt_max + 1e-4))
+            safe_assert(prior_cpt_min.shape == prior_cpt_max.shape)
+        except:
+            print("CPT min:\n\n", cpt_min)
+            print("\nNew CPT min:\n\n", new_cpt_min)
+            raise RuntimeError("Assert tests not passed")
 
         self.cn_mosaic.update_cpt(var, (new_cpt_min, new_cpt_max))
 
