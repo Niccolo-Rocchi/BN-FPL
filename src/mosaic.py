@@ -172,6 +172,7 @@ class PriorCPT(CN_CPT):
 
         self.clients = None
         self.weighting = None
+        self.intersection_matrix = None
 
     def set_clients(self, clients_list: list):
         """
@@ -236,6 +237,7 @@ class PriorCPT(CN_CPT):
         safe_assert(np.all(np.sum(W, axis=-1)) < 1 + 1e-6)
         safe_assert(np.all(new_cpt_min < new_cpt_max + 1e-6))
 
+        self.intersection_matrix = I
         return new_cpt_min, new_cpt_max
 
 

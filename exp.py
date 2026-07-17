@@ -13,6 +13,9 @@ sys.path.insert(0, str(Path().resolve().parents[1]))
 from src.config import create_clean_dir, load_config, set_seed
 from src.mosaic import Client
 
+# Set number of threads for parallel computation
+import os
+n_jobs = max(1, len(os.sched_getaffinity(0)) - 1)
 
 # No pickling
 _clients_template = None
@@ -30,7 +33,7 @@ def _init_worker(clients_template, client_num, config):
 def init_clients(config) -> list:
     clients = {}
     E = config["n_clients"]
-    p = 0
+    p = config["prob_shift"]
     bn_base = gum.loadBN(config["bn_base_path"])
     for e in range(E):
 
@@ -102,8 +105,8 @@ def main():
     # Set seed
     set_seed()
 
-    # Read configurations
-    config = load_config("conf_iid.yaml")
+    # Choose configurationc file
+    config = load_config("conf.yaml")
 
     # Create empty folders
     base_path = Path("results")
@@ -123,7 +126,7 @@ def main():
     ]
     ctx = mp.get_context("fork")
     with ctx.Pool(
-        processes=4,
+        processes=n_jobs,
         initializer=_init_worker,
         initargs=(clients, client_num, config),
     ) as pool:
