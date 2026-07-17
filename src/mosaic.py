@@ -1,12 +1,15 @@
 from __future__ import annotations
-from tenacity import retry, stop_after_attempt, wait_fixed
+
 import copy
+import sys
 
 import numpy as np
 import pyagrum as gum
+from tenacity import retry, stop_after_attempt, wait_fixed
 
 from src.config import safe_assert
 from src.utils import (
+    check_intersection,
     get_bn_counts,
     get_cpt_index,
     get_cpt_shape,
@@ -14,6 +17,7 @@ from src.utils import (
     get_tabular_cpt,
     learn_bn_params,
     vac_cn,
+    vertices_cset,
 )
 
 
@@ -49,7 +53,7 @@ class CN:
 
     def __deepcopy__(self, memo):
         new = self.__class__.__new__(self.__class__)
-        memo[id(self)] = new 
+        memo[id(self)] = new
         for k, v in self.__dict__.items():
             if k in ["bn_min", "bn_max"]:
                 if getattr(self, k) is None:
@@ -121,13 +125,25 @@ class CN_CPT:
         self.cpt_min = get_tabular_cpt(cpt_min)
         self.cpt_max = get_tabular_cpt(cpt_max)
 
+        self.compute_vertices()
+
     def __deepcopy__(self, memo):
         new = self.__class__.__new__(self.__class__)
-        memo[id(self)] = new 
+        memo[id(self)] = new
         for k, v in self.__dict__.items():
             setattr(new, k, copy.deepcopy(v, memo))
         return new
 
+    def compute_vertices(self):
+        v_list = []
+        for idx in range(len(self.cpt_min)):
+            cset_min = self.cpt_min[idx, :]
+            cset_max = self.cpt_max[idx, :]
+
+            vertices = vertices_cset(cset_min, cset_max)
+            v_list.append(vertices)
+
+        self.vertices = v_list
 
     def update(self, cpt_min_max: tuple):
         cpt_min, cpt_max = cpt_min_max
@@ -155,46 +171,72 @@ class PriorCPT(CN_CPT):
         super().__init__(var, shape)
 
         self.clients = None
-        self.method = None
         self.weighting = None
 
     def set_clients(self, clients_list: list):
+        """
+        For convenience: clients_list[0] is the client which `self` belongs;
+        clients_list[1:] are the clients to use as prior.
+        """
         self.clients = [copy.deepcopy(c) for c in clients_list]
 
     def is_vacuous(self) -> bool:
 
         return self.vacuous
 
-    def compute(self, method: str, weighting: str = None) -> tuple:
+    def compute(self, weighting: str = None, intersection: bool = False) -> tuple:
+        """
+        Compute a convex combination of prior clients' CPTs,
+        where the weighting method is `weighting`.
+        """
 
-        if self.vacuous:
+        # Do not compute if already computed
+        # if not self.vacuous: return self.get()
 
-            self.method = method
-            self.weighting = weighting
-
-            if len(self.clients) == 1:
-                new_cpt_min, new_cpt_max = self.clients[0].get_cset(self.var)
-
-            else:
-                cpts = np.zeros((2, *self.shape, len(self.clients)))
-                for i in range(len(self.clients)):
-                    c = self.clients[i]
-                    cpt_min, cpt_max = c.get_cset(self.var)
-                    cpts[0, ..., i] = get_tabular_cpt(cpt_min)
-                    cpts[1, ..., i] = get_tabular_cpt(cpt_max)
-
-                if self.method == "ConvComb":
-
-                    if self.weighting == "unif":
-                        w = 1 / len(self.clients)
-                        cpts_sum = np.sum(cpts, axis=-1) * w
-                        new_cpt_min, new_cpt_max = cpts_sum[0, ...], cpts_sum[1, ...]
-
-                        safe_assert(np.all(new_cpt_min <= new_cpt_max + 1e-6))
+        # One prior client case
+        if len(self.clients) == 2:
+            new_cpt_min, new_cpt_max = self.clients[1].get_cset(self.var)
             return new_cpt_min, new_cpt_max
 
-        else:
-            return self.get()
+        # Extract the prior clients' CPTs related to self.var
+        self.weighting = weighting
+        cpts = np.zeros((2, *self.shape, len(self.clients) - 1))
+        for i in range(len(self.clients) - 1):
+            c = self.clients[i + 1]
+            cpt_min, cpt_max = c.get_cset(self.var)
+            cpts[0, ..., i] = get_tabular_cpt(cpt_min)
+            cpts[1, ..., i] = get_tabular_cpt(cpt_max)
+
+        # Weighted average of prior clients' CPTs
+        I = np.ones((self.shape[0], len(self.clients) - 1))  # 1 = intersection
+        for row in range(I.shape[0]):
+            self_vertices = self.clients[0].cn.cpts[self.var].vertices[row]
+            for c in range(I.shape[1]):
+                c_vertices = self.clients[c + 1].cn.cpts[self.var].vertices[row]
+                if intersection and not check_intersection(self_vertices, c_vertices):
+                    I[row, c] = 0
+                if self.weighting == "ssize":
+                    I[row, c] *= self.clients[c + 1].data.shape[0]
+                elif self.weighting == "unif":
+                    continue
+        I_sum = np.sum(I, axis=-1, keepdims=True)
+        if np.any(I_sum == 0):
+            raise Warning(
+                "Non-overlap with all clients in at least one parent configuration for variable",
+                self.var,
+            )
+
+        W = np.divide(I, I_sum, out=np.zeros_like(I, dtype=float), where=I_sum != 0)
+        cpts_weighted = cpts * W[None, :, None, :]
+        cpts_sum = np.sum(cpts_weighted, axis=-1)
+
+        new_cpt_min, new_cpt_max = cpts_sum[0, ...], cpts_sum[1, ...]
+
+        # Debug
+        safe_assert(np.all(np.sum(W, axis=-1)) < 1 + 1e-6)
+        safe_assert(np.all(new_cpt_min < new_cpt_max + 1e-6))
+
+        return new_cpt_min, new_cpt_max
 
 
 # Prior for a CN
@@ -210,16 +252,18 @@ class PriorCN(CN):
             self.cpts[var] = PriorCPT(var, shape)
 
     def get_mask(self, var: str) -> np.array:
-        if self.cpts[var].clients is None:
-            raise RuntimeError(f"Clients are not set for variable {var}.")
 
         clients_list = self.cpts[var].clients
-        mask = get_tabular_cpt(clients_list[0].mask.cpt(var))
 
-        if len(clients_list) == 0:
+        if clients_list is None:
+            raise RuntimeError(f"Clients are not set for variable {var}.")
+
+        mask = get_tabular_cpt(clients_list[1].mask.cpt(var))
+
+        if len(clients_list) == 2:
             pass
         else:
-            for c in clients_list[1:]:
+            for c in clients_list[2:]:
                 mask *= get_tabular_cpt(c.mask.cpt(var))
 
         return mask
@@ -242,20 +286,28 @@ class PriorCN(CN):
         return True
 
     # Compute a prior CPT
-    def compute_cpt(self, var: str, clients_list: list, method: str, weighting: str = None):
+    def compute_cpt(
+        self,
+        var: str,
+        clients_list: list,
+        weighting: str = None,
+        intersection: bool = False,
+    ):
 
         # Compute the CPT
         self.cpts[var].set_clients(clients_list)
-        result = self.cpts[var].compute(method, weighting)
+        result = self.cpts[var].compute(weighting, intersection)
 
         # Update the CPT
         self.update_cpt(var, result)
 
     # Compute all prior CPTs
-    def compute(self, clients_list: list, method: str, weighting: str = None):
+    def compute(
+        self, clients_list: list, weighting: str = None, intersection: bool = False
+    ):
 
         for var in self.names():
-            self.compute_cpt(var, clients_list, method, weighting)
+            self.compute_cpt(var, clients_list, weighting, intersection)
 
 
 # Class for a client
@@ -285,7 +337,7 @@ class Client:
 
     def __deepcopy__(self, memo):
         new = self.__class__.__new__(self.__class__)
-        memo[id(self)] = new 
+        memo[id(self)] = new
         for k, v in self.__dict__.items():
             if k in ["gt", "mask", "bn", "bn_counts"]:
                 if getattr(self, k) is None:
@@ -297,9 +349,9 @@ class Client:
                 setattr(new, k, copy.deepcopy(v, memo))
         return new
 
-    @retry(stop=stop_after_attempt(100), wait=wait_fixed(.05))
+    @retry(stop=stop_after_attempt(100), wait=wait_fixed(0.05))
     def generate_base_info(self, n, ess):
-        
+
         # Generate data
         self.generate_data(size=n)
 
@@ -313,7 +365,7 @@ class Client:
         for a in attributes:
             if getattr(self, a) is None:
                 raise RuntimeError(f"Attribute '{a}' is missing.")
-            
+
     def reset_prior(self):
         self.prior_cn = PriorCN(self.gt)
 

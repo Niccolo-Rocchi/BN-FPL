@@ -8,8 +8,36 @@ import hopsy
 import numpy as np
 import pandas as pd
 import pyagrum as gum
+from scipy.optimize import linprog
 
 from src.config import safe_assert
+
+
+# Check whether two csets intersect
+def check_intersection(V1, V2) -> bool:
+    """
+    V1: (M, D), V2: (N, D)
+    Returns (bool intersection) between two credal sets,
+    represented as sets of extreme vertices
+    """
+
+    m, d = V1.shape
+    n, _ = V2.shape
+
+    c = np.zeros(m + n)
+
+    A_eq_coords = np.hstack((V1.T, -V2.T))  # (D, m+n)
+    A_eq_sum1 = np.hstack((np.ones(m), np.zeros(n)))
+    A_eq_sum2 = np.hstack((np.zeros(m), np.ones(n)))
+    A_eq = np.vstack((A_eq_coords, A_eq_sum1, A_eq_sum2))
+    b_eq = np.hstack((np.zeros(d), [1.0, 1.0]))
+
+    res = linprog(c, A_eq=A_eq, b_eq=b_eq, bounds=(0, None), method="highs")
+
+    if res.success:
+        # point = V1.T @ res.x[:m]   # == V2.T @ res.x[m:]
+        return True
+    return False
 
 
 # Define a vacuous CN based on a given BN
@@ -26,6 +54,7 @@ def vac_cn(bn: gum.BayesNet):
     cn.intervalToCredal()
 
     return cn
+
 
 # Perturb BN parameters with probability `prob` and size `eps`
 def perturb_bn_params(bn: gum.BayesNet, eps: float, prob: float = 1.0) -> gum.BayesNet:
@@ -59,8 +88,6 @@ def perturb_bn_params(bn: gum.BayesNet, eps: float, prob: float = 1.0) -> gum.Ba
         safe_assert(np.allclose(np.sum(cpt_resh, axis=1), 1))
 
     return bn_new, bn_mask
-
-
 
 
 # Resample BN parameters with probability `prob`
@@ -103,7 +130,7 @@ def resample_bn_params(
 
 
 # Compute the KL between a cset and the ground-truth distribution
-def get_kl_cset(cn: tuple, gt:gum.BayesNet, var, parents):
+def get_kl_cset(cn: tuple, gt: gum.BayesNet, var, parents):
     """
     Let X|\pa_X be a conditional distribution.
     The function returns the KL between a credal set in `cn` and the ground-truth (in `gt`).
@@ -143,7 +170,7 @@ def get_kl_cset(cn: tuple, gt:gum.BayesNet, var, parents):
 
 
 # Compute the KL between the learned distribution and the ground-truth one
-def get_kl(bn:gum.BayesNet, gt:gum.BayesNet, var, parents):
+def get_kl(bn: gum.BayesNet, gt: gum.BayesNet, var, parents):
     """
     Let X|\pa_X be a conditional distribution.
     The function returns the KL between a given distribution X|\pa_X
@@ -204,8 +231,9 @@ def get_bn_counts(bn, data):
 
     return bn_counts
 
+
 # Get a list of (var, parents) configurations from a BN
-def get_confs(bn:gum.BayesNet) -> list:
+def get_confs(bn: gum.BayesNet) -> list:
     confs = []
     for var in bn.names():
 
@@ -220,6 +248,7 @@ def get_confs(bn:gum.BayesNet) -> list:
 
             confs.append([var, parents])
     return confs
+
 
 # Get a bidimensional CPT
 def get_tabular_cpt(cpt) -> np.array:
