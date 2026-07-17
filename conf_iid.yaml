@@ -4,10 +4,12 @@ n_clients: 10
 client_num: 0
 s_sizes: 
   min: 50
-  max: 700
+  max: 500
   step: 50
 ess: 1
-prior_args: '["ConvComb", "unif"]'
+prior_args: 
+  weighting: unif
+  intersection: False
 
 bn_base_path: ./cancer.bif
-n_repetitions: 50
+n_repetitions: 25

@@ -1,13 +1,11 @@
-import ast
 import copy
 import gc
-import multiprocessing  # noqa: F401 # pylint: disable=unused-import
+import multiprocessing as mp
 import sys
 from pathlib import Path
 
 import numpy as np
 import pyagrum as gum
-from joblib import Parallel, delayed
 
 from src.utils import get_confs, get_kl, get_kl_cset, perturb_bn_params
 
@@ -16,8 +14,20 @@ from src.config import create_clean_dir, load_config, set_seed
 from src.mosaic import Client
 
 
-def init_clients(config) -> list:
+# No pickling
+_clients_template = None
+_client_num = None
+_config = None
 
+
+def _init_worker(clients_template, client_num, config):
+    global _clients_template, _client_num, _config
+    _clients_template = clients_template
+    _client_num = client_num
+    _config = config
+
+
+def init_clients(config) -> list:
     clients = {}
     E = config["n_clients"]
     p = 0
@@ -36,7 +46,6 @@ def init_clients(config) -> list:
 
 
 def save_results(client, ss_path, rep):
-
     # Save the client's BN
     gum.saveBN(client.bn, f"{ss_path}/{rep}-bn.bif")
 
@@ -53,9 +62,12 @@ def save_results(client, ss_path, rep):
     gum.saveBN(client.cn_mosaic.bn_max, f"{ss_path}/{rep}-mos_bn_max.bif")
 
 
-def exp(client_num, clients, n: int, ss_path, rep, config: dict):
+def exp(n, ss_path, rep):
+    # print("## Repetition: ", rep, flush=True)
 
-    print("## Repetition: ", rep, flush=True)
+    clients = copy.deepcopy(_clients_template)
+    config = _config
+    client_num = _client_num
 
     # Generate clients' data and learn models
     for e in clients:
@@ -66,14 +78,12 @@ def exp(client_num, clients, n: int, ss_path, rep, config: dict):
     client_exp = clients[client_num]
 
     # Set prior(s) clients
-    prior_clients_dict = clients
-    prior_clients_dict.pop(client_num)
-    prior_clients = list(prior_clients_dict.values())
+    prior_clients = list(clients.copy().values())
 
     # (Re-)compute the prior for the client
     client_exp.reset_prior()
     assert client_exp.prior_cn.is_vacuous_all()
-    client_exp.prior_cn.compute(prior_clients, *ast.literal_eval(config["prior_args"]))
+    client_exp.prior_cn.compute(prior_clients, **config["prior_args"])
     assert not client_exp.prior_cn.is_vacuous_any()
 
     # Run mosaic
@@ -81,6 +91,10 @@ def exp(client_num, clients, n: int, ss_path, rep, config: dict):
 
     # Save results
     save_results(client_exp, ss_path, rep)
+
+
+def _exp_star(args):
+    return exp(*args)
 
 
 def main():
@@ -107,24 +121,20 @@ def main():
         int(x)
         for x in np.arange(sizes_dict["min"], sizes_dict["max"], sizes_dict["step"])
     ]
-    for n in sizes:
+    ctx = mp.get_context("fork")
+    with ctx.Pool(
+        processes=4,
+        initializer=_init_worker,
+        initargs=(clients, client_num, config),
+    ) as pool:
+        for n in sizes:
+            print("# Sample size: ", n, flush=True)
+            ss_path = base_path / f"ss{n}"
+            create_clean_dir(ss_path)
 
-        print("# Sample size: ", n, flush=True)
+            tasks = [(n, ss_path, rep) for rep in range(config["n_repetitions"])]
+            pool.map(_exp_star, tasks)
 
-        # Create empty folder for results
-        ss_path = base_path / f"ss{n}"
-        create_clean_dir(ss_path)
-
-        #     # Run experiment, parallelized on repetitions
-        #     _ = Parallel(n_jobs=2)(
-        #     delayed(exp)(client_num, copy.deepcopy(clients), n, ss_path, rep, config) for rep in range(config["n_repetitions"])
-        # )
-
-        # Single-core
-        for rep in range(config["n_repetitions"]):
-            exp(client_num, copy.deepcopy(clients), n, ss_path, rep, config)
-
-    # Clean
     gc.collect()
 
 
