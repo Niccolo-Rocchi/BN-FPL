@@ -1,16 +1,16 @@
 ## Configuration file (#TODO: tidy up)
 
-n_clients: 10
+n_clients: 15
 client_num: 0
 s_sizes: 
   min: 50
   max: 550
   step: 50
-ess: 1
-prob_shift: 0 # Probability of shift in parameters between clients. 0: iid data.
+ess: 2
+prob_shift: 0.1 # Probability of shift in parameters between clients. 0: iid data.
 prior_args: 
   weighting: unif
-  intersection: False
+  intersection: True
 
 bn_base_path: ./cancer.bif
-n_repetitions: 25
+n_repetitions: 30

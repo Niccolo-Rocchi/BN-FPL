@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import sys
+import warnings
 
 import numpy as np
 import pyagrum as gum
@@ -221,10 +222,9 @@ class PriorCPT(CN_CPT):
                 elif self.weighting == "unif":
                     continue
         I_sum = np.sum(I, axis=-1, keepdims=True)
-        if np.any(I_sum == 0):
-            raise Warning(
-                "Non-overlap with all clients in at least one parent configuration for variable",
-                self.var,
+        if intersection and np.any(I_sum == 0):
+            warnings.warn(
+                f"Non-overlap with all clients in at least one parent configuration for variable {self.var}."
             )
 
         W = np.divide(I, I_sum, out=np.zeros_like(I, dtype=float), where=I_sum != 0)

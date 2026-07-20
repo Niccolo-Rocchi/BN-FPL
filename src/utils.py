@@ -77,7 +77,7 @@ def perturb_bn_params(bn: gum.BayesNet, eps: float, prob: float = 1.0) -> gum.Ba
 
                 row = cpt_resh[idx, :]
                 row += np.random.normal(0, eps, len(row))
-                row = np.clip(row, 1e-12, None)
+                row = np.clip(row, 1e-3, None)
                 row /= np.sum(row)
                 cpt_resh[idx, :] = row
 
@@ -662,6 +662,10 @@ def centroid_cset(vec_min, vec_max) -> np.array:
 
 # Get the credal set vertices
 def vertices_cset(vec_min, vec_max) -> np.array:
+
+    # Degenerate case
+    if np.all(vec_min == vec_max): 
+        return vec_min
 
     # Define the (in)equalities (i.e., get the H-representation of the credal set)
     n_par = len(vec_min)

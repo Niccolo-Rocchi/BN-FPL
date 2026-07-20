@@ -3,6 +3,7 @@ import gc
 import multiprocessing as mp
 import sys
 from pathlib import Path
+import traceback
 
 import numpy as np
 import pyagrum as gum
@@ -97,7 +98,12 @@ def exp(n, ss_path, rep):
 
 
 def _exp_star(args):
-    return exp(*args)
+    try:
+        return exp(*args)
+    except Exception:
+        tb = traceback.format_exc()
+        print("ERROR", args, tb, flush=True)
+        return
 
 
 def main():

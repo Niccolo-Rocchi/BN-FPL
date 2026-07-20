@@ -1,6 +1,6 @@
 venv/
 bin/
-results/
+results*/
 **/__pycache__/
 .pytest_cache/
 *.pyc
