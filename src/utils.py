@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import pyagrum as gum
 from scipy.optimize import linprog
+import itertools
 
 from src.config import safe_assert
 
@@ -127,6 +128,86 @@ def resample_bn_params(
         safe_assert(np.allclose(np.sum(cpt_resh, axis=1), 1))
 
     return bn_new, bn_mask
+
+# Compute the Jensen–Shannon divergence (JSD) between two distributions
+def jsd(p, q, eps=1e-12):
+    p = np.asarray(p, dtype=float) + eps
+    q = np.asarray(q, dtype=float) + eps
+    p /= p.sum(); q /= q.sum()
+    m = 0.5 * (p + q)
+    kl = lambda a, b: np.sum(a * np.log(a / b))
+    return 0.5 * kl(p, m) + 0.5 * kl(q, m)
+
+# Compute the Jensen–Shannon divergence (JSD) between two BNs
+def jsd_bn(B1, B2, target="marginals"):
+
+    if target == "joint":
+        ieB1 = gum.LazyPropagation(B1)
+        ieB1.addJointTarget(B1.names())
+        ieB1.makeInference()
+        p_B1 = ieB1.jointPosterior(B1.names()).tolist()
+
+        ieB2 = gum.LazyPropagation(B2)
+        ieB2.addJointTarget(B2.names())
+        ieB2.makeInference()
+        p_B2 = ieB2.jointPosterior(B2.names()).tolist()
+
+        return jsd(p_B1, p_B2)
+    
+    ieB1 = gum.LazyPropagation(B1)
+    ieB1.makeInference()
+
+    ieB2 = gum.LazyPropagation(B2)
+    ieB2.makeInference()
+    
+    results = {node: [] for node in B1.names()}
+    for node in B1.names():
+        p_B1 = ieB1.posterior(node).tolist()
+        p_B2 = ieB2.posterior(node).tolist()
+        results[node].append(jsd(p_B1, p_B2))
+
+    return {
+        node: {"min": min(v), "max": max(v), "mean": float(np.mean(v))}
+        for node, v in results.items()
+    }
+
+
+# Compute the JSD bounds between a BN `B` and a set of BNs `sampled_bns`
+def jsd_bounds_from_samples(B, sampled_bns, target="marginals"):
+
+    if target == "joint":
+        ieB = gum.LazyPropagation(B)
+        ieB.addJointTarget(B.names())
+        ieB.makeInference()
+        p_B = ieB.jointPosterior(B.names()).tolist()
+
+        vals = []
+        for bn in sampled_bns:
+            ie = gum.LazyPropagation(bn)
+            ie.addJointTarget(bn.names())
+            ie.makeInference()
+            p_C = ie.jointPosterior(bn.names()).tolist()
+
+            vals.append(jsd(p_B, p_C))
+        return {"min": min(vals), "max": max(vals), "mean": float(np.mean(vals)), "all": vals}
+
+    ieB = gum.LazyPropagation(B)
+    ieB.makeInference()
+
+    results = {node: [] for node in B.names()}
+    for bn in sampled_bns:
+        ie = gum.LazyPropagation(bn)
+        ie.makeInference()
+        for node in B.names():
+            p_B = ieB.posterior(node).tolist()
+            p_C = ie.posterior(node).tolist()
+            results[node].append(jsd(p_B, p_C))
+
+    return {
+        node: {"min": min(v), "max": max(v), "mean": float(np.mean(v))}
+        for node, v in results.items()
+    }
+
 
 
 # Compute the KL between a cset and the ground-truth distribution
@@ -695,7 +776,97 @@ def vertices_cset(vec_min, vec_max) -> np.array:
 
     return vertices
 
+# Get CPT vertices by combining all the local ones
+def vertices_cpt(cpt_min, cpt_max):
+    """
+    For a single CPT (with min/max bounds), this function calculates the local vertices
+    row by row (one row = one parent configuration) and performs
+    the Cartesian product to obtain all combinations of complete CPTs
+    compatible with that variable.
 
+    Returns: 1D array generator (flattened CPT, ready for `fillWith`)
+    """
+    cpt_min_arr = get_tabular_cpt(cpt_min[:])
+    cpt_max_arr = get_tabular_cpt(cpt_max[:])
+
+    row_vertices = []
+    for row in range(cpt_min_arr.shape[0]):
+        v = vertices_cset(cpt_min_arr[row, :], cpt_max_arr[row, :])
+        v = np.atleast_2d(v)
+        row_vertices.append(v)
+
+    n_combos = 1
+    for v in row_vertices:
+        n_combos *= v.shape[0]
+
+    for combo in itertools.product(*row_vertices):
+        yield np.array(combo).flatten(), n_combos
+
+# Get (a subset of) all vertices of a CN's strong extension
+def vertices_cn(bn_min, bn_max, n_bns=None, seed=42, verbose=False):
+    """
+    Samples (or generates ALL) the exact BNs obtained by combining the
+    local vertices of each CPT.
+
+    n_bns : int  -> samples `n_bns` random combinations (no guarantee of no repetition
+                    between them, independent sampling index by index)
+            None -> generates the EXHAUSTIVE enumeration of all combinations
+                    (exact superset of the vertices of the strong extension)
+    """
+    dag = gum.BayesNet(bn_min)
+
+    names = dag.names()
+
+    if n_bns is None:
+
+        # --- All combinations ---
+        var_cpt_combos = {
+        var: [c[0] for c in vertices_cpt(bn_min.cpt(var), bn_max.cpt(var))]
+        for var in dag.names()
+    }
+        total_combos = 1
+        for var in names:
+            total_combos *= len(var_cpt_combos[var])
+
+        if verbose:
+            print(f"[sample_extreme_bns] n_bns=None: Generating all "
+                  f"{total_combos} combinations.", flush=True)
+
+        bns = []
+        for selection in itertools.product(*[range(len(var_cpt_combos[v])) for v in names]):
+            bn = gum.BayesNet(dag)
+            for var, idx in zip(names, selection):
+                bn.cpt(var).fillWith(var_cpt_combos[var][idx])
+            bns.append(bn)
+        return bns
+
+    else:
+        # --- Random combinations ---
+        rng = np.random.default_rng(seed)
+
+        var_row_vertices = {}
+        for var in names:
+            cpt_min_arr = get_tabular_cpt(bn_min.cpt(var)[:])
+            cpt_max_arr = get_tabular_cpt(bn_max.cpt(var)[:])
+            rows = []
+            for row in range(cpt_min_arr.shape[0]):
+                v = np.atleast_2d(vertices_cset(cpt_min_arr[row, :], cpt_max_arr[row, :]))
+                rows.append(v)
+            var_row_vertices[var] = rows
+
+        bns = []
+        for _ in range(n_bns):
+            bn = gum.BayesNet(dag)
+            for var in names:
+                rows = var_row_vertices[var]
+                cpt_vec = np.concatenate([
+                    rows[row][rng.integers(rows[row].shape[0])]
+                    for row in range(len(rows))
+                ])
+                bn.cpt(var).fillWith(cpt_vec)
+            bns.append(bn)
+        return bns
+    
 # BNs sampler from a CN
 def sample_from_cn(bn_min, bn_max, n_bns: int) -> list:
 
@@ -704,10 +875,10 @@ def sample_from_cn(bn_min, bn_max, n_bns: int) -> list:
 
     # For each variable ...
     cpts_dict = {}
-    for var in dag.names():
+    for i, var in enumerate(dag.names()):
 
         # ... sample `n_bns` CPTs from the CN
-        cpts_dict[var] = sample_from_cpts(bn_min.cpt(var), bn_max.cpt(var), n_bns)
+        cpts_dict[var] = sample_from_cpts(bn_min.cpt(var), bn_max.cpt(var), n_bns, seed_offset=i)
 
     # For each sample ...
     bns = []
@@ -733,7 +904,7 @@ def sample_from_cn(bn_min, bn_max, n_bns: int) -> list:
 
 
 # Sample from two extreme CPTs
-def sample_from_cpts(cpt_min, cpt_max, n_bns) -> list:
+def sample_from_cpts(cpt_min, cpt_max, n_bns, seed_offset = 0) -> list:
 
     # Transform CPTs into pandas dataframes
     cpt_min = np.atleast_2d(cpt_min.topandas())
@@ -744,7 +915,7 @@ def sample_from_cpts(cpt_min, cpt_max, n_bns) -> list:
     for row in range(cpt_min.shape[0]):
 
         # ... sample `n_bns` points from the credal set
-        credal_dict[row] = sample_from_cset(cpt_min[row, :], cpt_max[row, :], n_bns)
+        credal_dict[row] = sample_from_cset(cpt_min[row, :], cpt_max[row, :], n_bns, seed=hash((seed_offset, row)) % (2**32))
 
     # For each sample ...
     cpt_samples = []
@@ -767,13 +938,17 @@ def sample_from_cpts(cpt_min, cpt_max, n_bns) -> list:
 
 
 # Sample from a credal set K(x | pi_x), i.e., a constrained polytope.
-def sample_from_cset(vec_min, vec_max, n_bns) -> list:
+def sample_from_cset(vec_min, vec_max, n_bns, seed = 42) -> list:
     """
     We assume a credal set is a polytope in a space of #X parameters, defined by a:
      - Multi-dimensional rectangle, i.e., inequality constraint Ax <= b, and
      - Hyperplane (provided all the variables sum up to 1), i.e., equality constraint A_eq x = b_eq.
     This is true if the CN has been learnt by local IDM, for instance.
     """
+
+    # Degenerate case
+    if np.all(vec_min == vec_max): 
+        return [vec_min]*n_bns
 
     # Define the rectangle
     n_par = len(vec_min)
@@ -792,7 +967,7 @@ def sample_from_cset(vec_min, vec_max, n_bns) -> list:
 
     # Sample from the polytope
     mc = hopsy.MarkovChain(constrained_rectangle)
-    rng = hopsy.RandomNumberGenerator(42)
+    rng = hopsy.RandomNumberGenerator(seed)
     _, constrained_samples = hopsy.sample(mc, rng, n_bns, thinning=10)
     constrained_samples = constrained_samples[0]
 

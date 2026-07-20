@@ -115,8 +115,9 @@ def main():
     config = load_config("conf.yaml")
 
     # Create empty folders
-    base_path = Path("results")
-    create_clean_dir(base_path)
+    res_str = config["res_path"] + "_" + str(config["prob_shift"])
+    res_path = Path(res_str) 
+    create_clean_dir(res_path)
 
     # Initialize clients
     clients = init_clients(config)
@@ -138,7 +139,7 @@ def main():
     ) as pool:
         for n in sizes:
             print("# Sample size: ", n, flush=True)
-            ss_path = base_path / f"ss{n}"
+            ss_path = res_path / f"ss{n}"
             create_clean_dir(ss_path)
 
             tasks = [(n, ss_path, rep) for rep in range(config["n_repetitions"])]
