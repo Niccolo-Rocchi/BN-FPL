@@ -386,6 +386,8 @@ class Client:
         """
         self.check(["data"])
         self.bn = learn_bn_params(self.gt, self.data)
+        for name in self.bn.names():
+            assert self.bn.variable(name).labels() == self.gt.variable(name).labels()
         self.bn.setProperty("name", "bn")
 
     def learn_cn(self, ess: int) -> None:

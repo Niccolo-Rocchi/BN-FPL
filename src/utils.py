@@ -1085,8 +1085,8 @@ def learn_bn_params(bn, data):
 
     bn_copy = gum.BayesNet(bn)
 
-    learner = gum.BNLearner(data)
-    learner.useSmoothingPrior(1e-6)
+    learner = gum.BNLearner(data, bn_copy)
+    learner.useSmoothingPrior(1e-3)
     bn_learnt = learner.learnParameters(bn_copy)
 
     return bn_learnt

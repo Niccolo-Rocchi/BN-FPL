@@ -115,7 +115,8 @@ def main():
     config = load_config("conf.yaml")
 
     # Create empty folders
-    res_str = config["res_path"] + "_" + str(config["prob_shift"])
+    int_str = "Int" if config["prior_args"]["intersection"] else "NoInt"
+    res_str = config["res_path"] + "_" + str(config["prob_shift"]) + "_" + int_str
     res_path = Path(res_str) 
     create_clean_dir(res_path)
 
