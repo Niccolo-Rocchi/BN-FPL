@@ -1086,11 +1086,10 @@ def learn_bn_params(bn, data):
     bn_copy = gum.BayesNet(bn)
 
     learner = gum.BNLearner(data, bn_copy)
-    learner.useSmoothingPrior(1e-3)
+    learner.useSmoothingPrior(1e-6)
     bn_learnt = learner.learnParameters(bn_copy)
 
     return bn_learnt
-
 
 # Extract a subgraph from a given BN
 def get_subgraph(bn, vars_to_keep: set):

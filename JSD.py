@@ -17,7 +17,6 @@ def _limit_threads():
     os.environ["OPENBLAS_NUM_THREADS"] = "1"
     os.environ["MKL_NUM_THREADS"] = "1"
 
-# OK
 def process_rep(rep, sizes, res_path, bn_base_path, n_bns):
     _limit_threads()
 
@@ -57,7 +56,7 @@ def process_rep(rep, sizes, res_path, bn_base_path, n_bns):
             bn_min, bn_max = eval(list_str)[i]
 
             # Vertices (for max JSD)
-            vertices_bns = vertices_cn(bn_min, bn_max, n_bns=n_bns)
+            vertices_bns = vertices_cn(bn_min, bn_max, n_bns=None)
 
             # Inner points (for min JSD)
             sampled_bns = sample_from_cn(bn_min, bn_max, n_bns=n_bns)
@@ -93,7 +92,9 @@ if __name__ == "__main__":
         int(x) for x in np.arange(sizes_dict["min"], sizes_dict["max"], sizes_dict["step"])
     ]
     n_reps = config["n_repetitions"]
-    res_path = Path("results_1.0_Int")
+    int_str = "Int" if config["prior_args"]["intersection"] else "NoInt"
+    res_str = config["res_path"] + "_" + str(config["prob_shift"]) + "_" + int_str
+    res_path = Path(res_str) 
 
     n_workers = min(n_reps, os.cpu_count())
 

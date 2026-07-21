@@ -7,10 +7,11 @@ s_sizes:
   max: 100
   step: 20
 ess: 2
-prob_shift: 1.0 # Probability of shift in parameters between clients. 0: iid data.
+eps: 0.1
+prob_shift: 0.0 # Probability of shift in parameters between clients. 0: iid data.
 prior_args: 
   weighting: unif
-  intersection: True
+  intersection: False
 res_path: results
 bn_base_path: ./cancer.bif
 n_repetitions: 10

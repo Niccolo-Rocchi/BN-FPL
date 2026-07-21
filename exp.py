@@ -35,12 +35,13 @@ def init_clients(config) -> list:
     clients = {}
     E = config["n_clients"]
     p = config["prob_shift"]
+    eps = config["eps"]
     bn_base = gum.loadBN(config["bn_base_path"])
     for e in range(E):
 
         # Init the client
         gt, mask = perturb_bn_params(
-            bn_base, eps=0.1, prob=p
+            bn_base, eps=eps, prob=p
         )  # If p=0 then it just copies `bn_base`
         client = Client(gt, mask)
 
