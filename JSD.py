@@ -17,7 +17,7 @@ def _limit_threads():
     os.environ["OPENBLAS_NUM_THREADS"] = "1"
     os.environ["MKL_NUM_THREADS"] = "1"
 
-def process_rep(rep, sizes, res_path, bn_base_path, n_bns):
+def process_rep(rep, sizes, res_path, bn_base_path, n_bns, targ):
     _limit_threads()
 
     res_path = Path(res_path)
@@ -65,7 +65,7 @@ def process_rep(rep, sizes, res_path, bn_base_path, n_bns):
             all_bns = vertices_bns + sampled_bns
 
             # Results
-            results = jsd_bounds_from_samples(bn_base, all_bns, target="joint")
+            results = jsd_bounds_from_samples(bn_base, all_bns, target=targ)
             min_list.append(results["min"])
             max_list.append(results["max"])
             mean_list.append(results["mean"])
@@ -77,7 +77,7 @@ def process_rep(rep, sizes, res_path, bn_base_path, n_bns):
     mle_list = []
     for i in range(len(res)):
         bn = bn_list[i]
-        mle_list.append(jsd_bn(bn_base, bn, target="joint"))
+        mle_list.append(jsd_bn(bn_base, bn, target=targ))
 
     res["mle"] = mle_list
     return res
@@ -105,6 +105,7 @@ if __name__ == "__main__":
         res_path=res_path,
         n_bns=config["n_bns"],
         bn_base_path=config["bn_base_path"],  # path al file .bif di bn_base
+        targ="joint"
     )
 
     with ctx.Pool(processes=n_workers) as pool:

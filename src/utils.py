@@ -143,11 +143,13 @@ def jsd_bn(B1, B2, target="marginals"):
 
     if target == "joint":
         ieB1 = gum.LazyPropagation(B1)
+        ieB1.eraseAllEvidence()
         ieB1.addJointTarget(B1.names())
         ieB1.makeInference()
         p_B1 = ieB1.jointPosterior(B1.names()).tolist()
 
         ieB2 = gum.LazyPropagation(B2)
+        ieB2.eraseAllEvidence()
         ieB2.addJointTarget(B2.names())
         ieB2.makeInference()
         p_B2 = ieB2.jointPosterior(B2.names()).tolist()
@@ -177,6 +179,7 @@ def jsd_bounds_from_samples(B, sampled_bns, target="marginals"):
 
     if target == "joint":
         ieB = gum.LazyPropagation(B)
+        ieB.eraseAllEvidence()
         ieB.addJointTarget(B.names())
         ieB.makeInference()
         p_B = ieB.jointPosterior(B.names()).tolist()
