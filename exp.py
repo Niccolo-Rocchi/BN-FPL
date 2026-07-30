@@ -130,7 +130,7 @@ def main():
     create_clean_dir(res_path)
 
     # Initialize clients
-    clients = init_clients(config, verbose=True)
+    clients = init_clients(config, verbose=False)
 
     # Choose client
     client_num = config["client_num"]

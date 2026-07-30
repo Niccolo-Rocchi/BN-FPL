@@ -142,21 +142,11 @@ def jsd(p, q, eps=1e-12):
 def jsd_bn(B1, B2, target="marginals"):
 
     if target == "joint":
-        nodes = sorted(list(B1.names()))
+        names = sorted(list(B1.names()))
 
-        ieB1 = gum.LazyPropagation(B1)
-        ieB1.addJointTarget(set(nodes))
-        ieB1.makeInference()
-        p_B1 = ieB1.jointPosterior(set(nodes))
-        p_B1 = p_B1.reorganize(nodes)
-        p_B1 = p_B1.toarray().tolist()
 
-        ieB2 = gum.LazyPropagation(B2)
-        ieB2.addJointTarget(set(nodes))
-        ieB2.makeInference()
-        p_B2 = ieB2.jointPosterior(set(nodes))
-        p_B2 = p_B2.reorganize(nodes)
-        p_B2 = p_B2.toarray().tolist()
+        p_B1 = get_joint(B1, names)
+        p_B2 = get_joint(B2, names)
 
         return jsd(p_B1, p_B2)
     
@@ -177,20 +167,14 @@ def jsd_bn(B1, B2, target="marginals"):
 # Compute the JSD bounds between a BN `B` and a set of BNs `sampled_bns`
 def jsd_bounds_from_samples(B, sampled_bns, target="marginals"):
 
+    names = sorted(list(B.names()))
+
     if target == "joint":
-        ieB = gum.LazyPropagation(B)
-        ieB.eraseAllEvidence()
-        ieB.addJointTarget(B.names())
-        ieB.makeInference()
-        p_B = ieB.jointPosterior(B.names()).tolist()
+        p_B = get_joint(B, names)
 
         vals = []
         for bn in sampled_bns:
-            ie = gum.LazyPropagation(bn)
-            ie.addJointTarget(bn.names())
-            ie.makeInference()
-            p_C = ie.jointPosterior(bn.names()).tolist()
-
+            p_C = get_joint(bn, names)
             vals.append(jsd(p_B, p_C))
         return {"min": min(vals), "max": max(vals), "mean": float(np.mean(vals)), "all": vals}
 
@@ -212,6 +196,18 @@ def jsd_bounds_from_samples(B, sampled_bns, target="marginals"):
     }
 
 
+# Get the joint distribution of a BN, ordered by `names`
+def get_joint(bn:gum.BayesNet, names:list):
+
+    ie = gum.LazyPropagation(bn)
+    ie.eraseAllEvidence()
+    ie.addJointTarget(set(names))
+    ie.makeInference()
+    p = ie.jointPosterior(set(names))
+    p = p.reorganize(names)
+    p = p.toarray().tolist()
+
+    return p
 
 # Compute the KL between a cset and the ground-truth distribution
 def get_kl_cset(cn: tuple, gt: gum.BayesNet, var, parents):
