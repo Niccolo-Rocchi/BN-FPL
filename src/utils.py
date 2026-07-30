@@ -142,17 +142,21 @@ def jsd(p, q, eps=1e-12):
 def jsd_bn(B1, B2, target="marginals"):
 
     if target == "joint":
+        nodes = sorted(list(B1.names()))
+
         ieB1 = gum.LazyPropagation(B1)
-        ieB1.eraseAllEvidence()
-        ieB1.addJointTarget(B1.names())
+        ieB1.addJointTarget(set(nodes))
         ieB1.makeInference()
-        p_B1 = ieB1.jointPosterior(B1.names()).tolist()
+        p_B1 = ieB1.jointPosterior(set(nodes))
+        p_B1 = p_B1.reorganize(nodes)
+        p_B1 = p_B1.toarray().tolist()
 
         ieB2 = gum.LazyPropagation(B2)
-        ieB2.eraseAllEvidence()
-        ieB2.addJointTarget(B2.names())
+        ieB2.addJointTarget(set(nodes))
         ieB2.makeInference()
-        p_B2 = ieB2.jointPosterior(B2.names()).tolist()
+        p_B2 = ieB2.jointPosterior(set(nodes))
+        p_B2 = p_B2.reorganize(nodes)
+        p_B2 = p_B2.toarray().tolist()
 
         return jsd(p_B1, p_B2)
     
@@ -168,11 +172,7 @@ def jsd_bn(B1, B2, target="marginals"):
         p_B2 = ieB2.posterior(node).tolist()
         results[node].append(jsd(p_B1, p_B2))
 
-    return {
-        node: {"min": min(v), "max": max(v), "mean": float(np.mean(v))}
-        for node, v in results.items()
-    }
-
+    return results
 
 # Compute the JSD bounds between a BN `B` and a set of BNs `sampled_bns`
 def jsd_bounds_from_samples(B, sampled_bns, target="marginals"):

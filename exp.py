@@ -8,7 +8,7 @@ import traceback
 import numpy as np
 import pyagrum as gum
 
-from src.utils import get_confs, get_kl, get_kl_cset, perturb_bn_params
+from src.utils import get_confs, get_kl, get_kl_cset, jsd, jsd_bn, perturb_bn_params
 
 sys.path.insert(0, str(Path().resolve().parents[1]))
 from src.config import create_clean_dir, load_config, set_seed
@@ -31,22 +31,30 @@ def _init_worker(clients_template, client_num, config):
     _config = config
 
 
-def init_clients(config) -> list:
-    clients = {}
+def init_clients(config, verbose=False) -> list:
     E = config["n_clients"]
-    p = config["prob_shift"]
     eps = config["eps"]
     bn_base = gum.loadBN(config["bn_base_path"])
+
+    clients = {}
     for e in range(E):
+
+        # Copy `bn_base` for the first client
+        p = config["prob_shift"] if e != 0 else 0
 
         # Init the client
         gt, mask = perturb_bn_params(
             bn_base, eps=eps, prob=p
-        )  # If p=0 then it just copies `bn_base`
+        )  # If p=0 then just copy `bn_base`
         client = Client(gt, mask)
 
         # Collect
         clients[e] = client
+
+        if verbose and e != 0:
+            d = jsd_bn(clients[e].gt, clients[0].gt, "joint")
+            print("Dist. from client 0: ", d)
+
     return clients
 
 
@@ -122,7 +130,7 @@ def main():
     create_clean_dir(res_path)
 
     # Initialize clients
-    clients = init_clients(config)
+    clients = init_clients(config, verbose=True)
 
     # Choose client
     client_num = config["client_num"]

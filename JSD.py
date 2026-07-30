@@ -108,8 +108,9 @@ if __name__ == "__main__":
         targ="joint"
     )
 
+    print("Computing JSD...")
     with ctx.Pool(processes=n_workers) as pool:
-        df_list = list(tqdm(pool.imap(worker, range(n_reps)), total=n_reps))
+        df_list = list(pool.imap(worker, range(n_reps)), total=n_reps)
 
     df_tot = pd.concat(df_list, axis=0)
     df_tot.to_csv(res_path / "df_tot.csv")
