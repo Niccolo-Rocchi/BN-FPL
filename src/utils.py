@@ -191,7 +191,7 @@ def jsd_bounds_from_samples(B, sampled_bns, target="marginals"):
             results[node].append(jsd(p_B, p_C))
 
     return {
-        node: {"min": min(v), "max": max(v), "mean": float(np.mean(v))}
+        node: {"min": min(v), "max": max(v), "mean": float(np.mean(v)), "std": np.std(v)}
         for node, v in results.items()
     }
 
