@@ -4,15 +4,15 @@ n_clients: 10   # 10 and 20
 client_num: 0
 s_sizes: 
   min: 5
-  max: 410
-  step: 5
+  max: 505
+  step: 25
 ess: 2          # 2 and 5
-eps: 0.5        # ok
-prob_shift: 1.0 # Probability of shift in parameters between clients. 0: iid data.
+alpha: 20       # Dirichlet concentration for parameter perturbation (higher = smaller shift)
+prob_shift: 0.5 # Probability of shift in parameters between clients. 0: iid data.
 prior_args: 
   weighting: unif
   intersection: True
 res_path: results
 bn_base_path: ./cancer.bif
-n_repetitions: 50
-n_bns: 50
+n_repetitions: 100
+n_bns: 100

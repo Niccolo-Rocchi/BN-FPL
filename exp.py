@@ -1,4 +1,3 @@
-import copy
 import gc
 import multiprocessing as mp
 import sys
@@ -19,21 +18,19 @@ import os
 n_jobs = max(1, len(os.sched_getaffinity(0)) - 1)
 
 # No pickling
-_clients_template = None
 _client_num = None
 _config = None
 
 
-def _init_worker(clients_template, client_num, config):
-    global _clients_template, _client_num, _config
-    _clients_template = clients_template
+def _init_worker(client_num, config):
+    global _client_num, _config
     _client_num = client_num
     _config = config
 
 
 def init_clients(config, verbose=False) -> list:
     E = config["n_clients"]
-    eps = config["eps"]
+    alpha = config["alpha"]
     bn_base = gum.loadBN(config["bn_base_path"])
 
     clients = {}
@@ -44,7 +41,7 @@ def init_clients(config, verbose=False) -> list:
 
         # Init the client
         gt, mask = perturb_bn_params(
-            bn_base, eps=eps, prob=p
+            bn_base, alpha=alpha, prob=p
         )  # If p=0 then just copy `bn_base`
         client = Client(gt, mask)
 
@@ -58,9 +55,11 @@ def init_clients(config, verbose=False) -> list:
     return clients
 
 
-def save_results(client, ss_path, rep):
-    # Save the client's BN
-    gum.saveBN(client.bn, f"{ss_path}/{rep}-bn.bif")
+def save_results(client, ss_path, rep, median_intersection=None):
+    # Save the client's exact MLE (used as the "mle" reference in JSD.py and
+    # by Plot_KL.ipynb; NOT client.bn, which is learned with a small
+    # smoothing prior -- see mle_bn_from_counts / learn_bn_params).
+    gum.saveBN(client.bn_mle, f"{ss_path}/{rep}-bn.bif")
 
     # Save the client's CN
     gum.saveBN(client.cn.bn_min, f"{ss_path}/{rep}-idm_bn_min.bif")
@@ -74,13 +73,34 @@ def save_results(client, ss_path, rep):
     gum.saveBN(client.cn_mosaic.bn_min, f"{ss_path}/{rep}-mos_bn_min.bif")
     gum.saveBN(client.cn_mosaic.bn_max, f"{ss_path}/{rep}-mos_bn_max.bif")
 
+    # Save the network-wide median fraction of clients intersecting the prior
+    if median_intersection is not None:
+        with open(f"{ss_path}/{rep}-intersection.txt", "w") as f:
+            f.write(str(median_intersection))
+
 
 def exp(n, ss_path, rep):
     # print("## Repetition: ", rep, flush=True)
 
-    clients = copy.deepcopy(_clients_template)
+    # Each (n, rep) task needs its own independent random stream. The worker
+    # pool uses "fork", so sibling worker processes inherit an IDENTICAL RNG
+    # state at fork time; without reseeding here, several "repetitions"
+    # processed by distinct, freshly-forked workers would silently generate
+    # IDENTICAL data (confirmed empirically: client 0's data was byte-for-
+    # byte identical across repetitions for several sample sizes). The seed
+    # is still fully reproducible given (n, rep).
+    task_seed = hash((n, rep)) % (2**32)
+    np.random.seed(task_seed)
+    gum.initRandom(task_seed)
+
     config = _config
     client_num = _client_num
+
+    # Generate a fresh data-generating process for this repetition (i.e. new
+    # client perturbations too, not just new sampled data from a DGP fixed
+    # once for the whole sweep) -- cap6_extract.tex's "Reiterations" repeats
+    # the whole "above steps", which includes "Data Generation".
+    clients = init_clients(config)
 
     # Generate clients' data and learn models
     for e in clients:
@@ -90,20 +110,21 @@ def exp(n, ss_path, rep):
     # Choose client
     client_exp = clients[client_num]
 
-    # Set prior(s) clients
-    prior_clients = list(clients.copy().values())
+    # Set prior(s) clients: client_exp must be first (see PriorCPT.set_clients),
+    # followed by all other clients, used as prior candidates.
+    prior_clients = [client_exp] + [c for e, c in clients.items() if e != client_num]
 
     # (Re-)compute the prior for the client
     client_exp.reset_prior()
     assert client_exp.prior_cn.is_vacuous_all()
-    client_exp.prior_cn.compute(prior_clients, **config["prior_args"])
+    median_intersection = client_exp.prior_cn.compute(prior_clients, **config["prior_args"])
     assert not client_exp.prior_cn.is_vacuous_any()
 
     # Run mosaic
     client_exp.mosaic_cn()
 
     # Save results
-    save_results(client_exp, ss_path, rep)
+    save_results(client_exp, ss_path, rep, median_intersection)
 
 
 def _exp_star(args):
@@ -129,9 +150,6 @@ def main():
     res_path = Path(res_str) 
     create_clean_dir(res_path)
 
-    # Initialize clients
-    clients = init_clients(config, verbose=False)
-
     # Choose client
     client_num = config["client_num"]
 
@@ -145,7 +163,7 @@ def main():
     with ctx.Pool(
         processes=n_jobs,
         initializer=_init_worker,
-        initargs=(clients, client_num, config),
+        initargs=(client_num, config),
     ) as pool:
         for n in sizes:
             print("# Sample size: ", n, flush=True)

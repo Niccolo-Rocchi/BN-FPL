@@ -57,11 +57,17 @@ def vac_cn(bn: gum.BayesNet):
     return cn
 
 
-# Perturb BN parameters with probability `prob` and size `eps`
-def perturb_bn_params(bn: gum.BayesNet, eps: float, prob: float = 1.0) -> gum.BayesNet:
+# Perturb BN parameters with probability `prob` and concentration `alpha`
+def perturb_bn_params(bn: gum.BayesNet, alpha: float, prob: float = 1.0) -> gum.BayesNet:
     """
     Each conditional X|\pi_X is perturbed with probability `prob`.
-    The perturbation is taken from a Normal(0, eps).
+    The perturbed row is drawn from Dirichlet(alpha * row), which is
+    centered exactly on the original row (E[p_new] = row) with
+    Var[p_new_i] = row_i*(1-row_i)/(alpha+1): larger `alpha` means a
+    tighter (smaller) shift, and alpha -> infinity recovers the original
+    row exactly. Unlike additive Gaussian noise followed by clipping and
+    renormalization, every draw is automatically a valid probability
+    vector, with no ad hoc floor/renormalization needed.
     """
     bn_new = gum.BayesNet(bn)
     bn_mask = gum.BayesNet(bn)
@@ -77,10 +83,10 @@ def perturb_bn_params(bn: gum.BayesNet, eps: float, prob: float = 1.0) -> gum.Ba
                 mask[idx, :] = 0
 
                 row = cpt_resh[idx, :]
-                row += np.random.normal(0, eps, len(row))
-                row = np.clip(row, 1e-3, None)
-                row /= np.sum(row)
-                cpt_resh[idx, :] = row
+                # Guard against an exact-zero entry, which would make
+                # np.random.dirichlet's concentration parameter <= 0.
+                concentration = alpha * np.clip(row, 1e-9, None)
+                cpt_resh[idx, :] = np.random.dirichlet(concentration)
 
         cpt_new.fillWith(cpt_resh.flatten())
         bn_mask.cpt(node_id).fillWith(mask.flatten())
@@ -276,7 +282,15 @@ def get_kl(bn: gum.BayesNet, gt: gum.BayesNet, var, parents):
     return kl_sym
 
 
-# Create the BN storing the counts of events
+# Create the BN storing the counts of events. `bn` is only used for its
+# structure (node names, parents, variable labels and the CPTs' row/column
+# order); its CPT *values* are never read, so the result only depends on
+# `data`, unlike a previous version of this function which reconstructed
+# joint counts as (bn's CPT value) * (parent-marginal count) -- correct only
+# when `bn`'s CPT happens to already hold the exact empirical MLE of `data`
+# (true for `Client.learn_bn`'s output, but silently wrong whenever called
+# with any other CPT, e.g. `mle_cn`/`mne_cn`/`ran_cn`/`centroid_cn`/
+# `maxent_cn`, which pass a CN's bn_min).
 def get_bn_counts(bn, data):
 
     # Init the BN
@@ -284,25 +298,35 @@ def get_bn_counts(bn, data):
 
     for node in bn.names():
 
-        cpt = bn.cpt(node)
+        var_size = bn.variable(node).domainSize()
+        node_labels = list(bn.variable(node).labels())  # CPT's own column order
 
-        if len(bn.parents(node)) != 0:
-            var_size = bn.variable(node).domainSize()
-            n_rows = cpt.domainSize() // var_size
+        parent_confs = get_parent_confs(bn, node)  # native row order, not topandas'
 
-            index = cpt.topandas().index
-            index_df = index.to_frame(index=False)
+        if parent_confs != [None]:
+            n_rows = len(parent_confs)
+            index_df = pd.DataFrame(parent_confs)
+            parent_cols = index_df.columns.tolist()
 
-            subset = index_df.columns.tolist()
+            # Full (parent configuration x node value) grid, in the CPT's own
+            # row/column order: `node_labels * n_rows` tiles the node's
+            # labels, aligning with `index_df`'s rows repeated `var_size`
+            # times each.
+            full_grid = index_df.loc[index_df.index.repeat(var_size)].reset_index(
+                drop=True
+            )
+            full_grid[node] = node_labels * n_rows
+
+            subset = parent_cols + [node]
             data_counts = data.value_counts(subset=subset).reset_index(name="counts")
-            res = pd.merge(index_df, data_counts, on=subset, how="left")
+            res = pd.merge(full_grid, data_counts, on=subset, how="left")
             res["counts"] = res["counts"].fillna(0).astype(int)
 
-            cpt_resh = cpt[:].reshape(n_rows, var_size)
-            cpt_new = np.round(cpt_resh * np.atleast_2d(res["counts"]).T)
+            cpt_new = res["counts"].to_numpy().reshape(n_rows, var_size)
 
         else:
-            cpt_new = np.round(cpt[:] * len(data))
+            value_counts = data[node].value_counts()
+            cpt_new = np.array([[value_counts.get(lab, 0) for lab in node_labels]])
 
         bn_counts.cpt(node).fillWith(cpt_new.flatten().tolist())
 
@@ -312,19 +336,46 @@ def get_bn_counts(bn, data):
     return bn_counts
 
 
+# Get the exact (unsmoothed) MLE BN from a BN of counts (see get_bn_counts):
+# P(X=x|pi_X) = N[x,pi_X] / N[pi_X], row by row. This is the correct theta_hat
+# to use whenever the true MLE is needed (e.g. as a reference for evaluation,
+# or in the MOSAIC update rule): `learn_bn_params`'s output should NOT be used
+# for this, since its smoothing prior (needed only when the learnt BN is
+# itself used to generate further data, to avoid zero probabilities) biases
+# it away from the true MLE -- a bias that is small in absolute terms but can
+# be large relative to the tiny sample sizes typical of this pipeline.
+def mle_bn_from_counts(bn_counts: gum.BayesNet) -> gum.BayesNet:
+
+    bn = gum.BayesNet(bn_counts)
+
+    for var in bn.names():
+        counts = get_tabular_cpt(bn_counts.cpt(var))
+        var_size = counts.shape[1]
+        row_sums = counts.sum(axis=1, keepdims=True)
+
+        # Where a parent configuration was never observed (row_sums == 0),
+        # the MLE is undefined; default to a uniform distribution there.
+        mle = np.divide(
+            counts,
+            row_sums,
+            out=np.full_like(counts, 1.0 / var_size, dtype=float),
+            where=row_sums != 0,
+        )
+        bn.cpt(var).fillWith(mle.flatten().tolist())
+
+        # Debug
+        safe_assert(np.allclose(mle.sum(axis=1), 1.0))
+
+    return bn
+
+
 # Get a list of (var, parents) configurations from a BN
 def get_confs(bn: gum.BayesNet) -> list:
     confs = []
     for var in bn.names():
 
         # For every parent configuration ...
-        index_df = bn.cpt(var).topandas().index.to_frame(index=False)
-        parents_conf = (
-            [dict(index_df.iloc[i]) for i in range(len(index_df))]
-            if len(bn.parents(var)) != 0
-            else [None]
-        )
-        for parents in parents_conf:
+        for parents in get_parent_confs(bn, var):
 
             confs.append([var, parents])
     return confs
@@ -352,21 +403,52 @@ def get_cpt_shape(cpt) -> tuple:
     return n_rows, var_size
 
 
+# List the parent configurations of `var` in `bn`, in the same row order as
+# get_tabular_cpt(bn.cpt(var)) -- i.e. pyagrum's native order (as used by
+# cpt[:] and .fillWith()), NOT cpt.topandas()'s alphabetically-sorted order.
+# The two differ (silently) for any variable whose labels are not already in
+# alphabetical order -- e.g. every variable in cancer.bif (True/False,
+# low/high, positive/negative). Returns [None] for a root variable.
+def get_parent_confs(bn: gum.BayesNet, var: str) -> list:
+
+    cpt = bn.cpt(var)
+    parent_vars = [v for v in cpt.variablesSequence() if v.name() != var]
+    if not parent_vars:
+        return [None]
+
+    inst = gum.Instantiation()
+    for v in parent_vars:
+        inst.add(v)
+
+    confs = []
+    inst.setFirst()
+    while not inst.end():
+        confs.append(
+            {
+                inst.variable(k).name(): inst.variable(k).label(inst.val(k))
+                for k in range(inst.nbrDim())
+            }
+        )
+        inst.inc()
+
+    return confs
+
+
 # Get the index in a CPT corresponding to a specific configuration of the parents
 def get_cpt_index(bn: gum.BayesNet, var: str, parents: dict):
     """
-    Notice: the CPT is thought as a bidimensional matrix.
+    Notice: the CPT is thought as a bidimensional matrix, with rows ordered
+    as in get_parent_confs (i.e. get_tabular_cpt's native order).
     """
     if parents is None:
         return 0
-    index = bn.cpt(var).topandas().index
-    index_df = index.to_frame(index=False)
-    query_str = " and ".join([f"{col} == @parents['{col}']" for col in parents])
-    res_query = index_df.query(query_str)
-    if res_query.empty:
-        raise RuntimeError(f"Wrong parent configuration for variable '{var}'.")
 
-    return res_query.index[0]
+    parents = {k: str(v) for k, v in parents.items()}
+    for idx, conf in enumerate(get_parent_confs(bn, var)):
+        if conf is not None and all(str(conf.get(k)) == v for k, v in parents.items()):
+            return idx
+
+    raise RuntimeError(f"Wrong parent configuration for variable '{var}'.")
 
 
 # Get the BN inside a CN with max entropy distribution
@@ -394,8 +476,8 @@ def maxent_cn(bn_min, bn_max) -> gum.BayesNet:
 def maxent_cpt(cpt_min, cpt_max) -> np.array:
 
     # Transform CPTs into pandas dataframes
-    cpt_min = np.atleast_2d(cpt_min.topandas())
-    cpt_max = np.atleast_2d(cpt_max.topandas())
+    cpt_min = get_tabular_cpt(cpt_min)
+    cpt_max = get_tabular_cpt(cpt_max)
 
     # For each row in the CPT ...
     cpt = []
@@ -492,9 +574,9 @@ def mle_cn(bn_min, bn_max, data) -> gum.BayesNet:
 def mle_cpt(cpt_min, cpt_max, cpt_counts) -> np.array:
 
     # Transform CPTs into pandas dataframes
-    cpt_min = np.atleast_2d(cpt_min.topandas())
-    cpt_max = np.atleast_2d(cpt_max.topandas())
-    cpt_counts = np.atleast_2d(cpt_counts.topandas())
+    cpt_min = get_tabular_cpt(cpt_min)
+    cpt_max = get_tabular_cpt(cpt_max)
+    cpt_counts = get_tabular_cpt(cpt_counts)
 
     # For each row in the CPT ...
     cpt = []
@@ -567,9 +649,9 @@ def mne_cn(bn_min, bn_max, data) -> gum.BayesNet:
 def mne_cpt(cpt_min, cpt_max, cpt_counts) -> np.array:
 
     # Transform CPTs into pandas dataframes
-    cpt_min = np.atleast_2d(cpt_min.topandas())
-    cpt_max = np.atleast_2d(cpt_max.topandas())
-    cpt_counts = np.atleast_2d(cpt_counts.topandas())
+    cpt_min = get_tabular_cpt(cpt_min)
+    cpt_max = get_tabular_cpt(cpt_max)
+    cpt_counts = get_tabular_cpt(cpt_counts)
 
     # For each row in the CPT ...
     cpt = []
@@ -589,20 +671,35 @@ def mne_cpt(cpt_min, cpt_max, cpt_counts) -> np.array:
     return cpt
 
 
+def _neg_loglik(vec, counts) -> float:
+    """
+    -sum(counts * log(vec)), with the convention 0*log(0)=0: a category with
+    zero probability contributes 0 if it was never observed (counts=0), but
+    +inf if it was observed (counts>0) -- i.e. that vector is infinitely
+    unlikely, and must never be silently treated as a neutral (0) penalty.
+    """
+    with np.errstate(divide="ignore", invalid="ignore"):
+        log_vec = np.full_like(vec, -np.inf, dtype=float)
+        np.log(vec, out=log_vec, where=vec > 0)
+        contrib = counts * -log_vec
+    return float(np.sum(np.where(counts == 0, 0.0, contrib)))
+
+
 # Get the MNE distribution inside a credal set
 def mne_cset(vec_min, vec_max, counts) -> np.array:
 
     # Get the credal set vertices
     vertices = vertices_cset(vec_min, vec_max)
 
-    # Get the vertex that has the maximum (-likelihood)
+    # Get the vertex that has the maximum (-likelihood), i.e. the minimum
+    # likelihood (worst fit to `counts`) within the credal set
     vec_best = vertices[0, :]
-    mne_best = counts @ -np.log(np.where(vec_best > 0, vec_best, 1))
+    mne_best = _neg_loglik(vec_best, counts)
 
     for row in range(vertices.shape[0]):
 
         vec = vertices[row, :]
-        mne = counts @ -np.log(np.where(vec > 0, vec, 1))
+        mne = _neg_loglik(vec, counts)
 
         if mne > mne_best:
             mne_best = mne
@@ -639,8 +736,8 @@ def ran_cn(bn_min, bn_max) -> gum.BayesNet:
 def ran_cpt(cpt_min, cpt_max) -> np.array:
 
     # Transform CPTs into pandas dataframes
-    cpt_min = np.atleast_2d(cpt_min.topandas())
-    cpt_max = np.atleast_2d(cpt_max.topandas())
+    cpt_min = get_tabular_cpt(cpt_min)
+    cpt_max = get_tabular_cpt(cpt_max)
 
     # For each row in the CPT ...
     cpt = []
@@ -704,8 +801,8 @@ def centroid_cn(bn_min, bn_max) -> gum.BayesNet:
 def centroid_cpt(cpt_min, cpt_max) -> np.array:
 
     # Transform CPTs into pandas dataframes
-    cpt_min = np.atleast_2d(cpt_min.topandas())
-    cpt_max = np.atleast_2d(cpt_max.topandas())
+    cpt_min = get_tabular_cpt(cpt_min)
+    cpt_max = get_tabular_cpt(cpt_max)
 
     # For each row in the CPT ...
     cpt = []
@@ -743,9 +840,12 @@ def centroid_cset(vec_min, vec_max) -> np.array:
 # Get the credal set vertices
 def vertices_cset(vec_min, vec_max) -> np.array:
 
-    # Degenerate case
-    if np.all(vec_min == vec_max): 
-        return vec_min
+    # Degenerate case. Shape is kept consistent with the general case (a 2D
+    # array of shape (n_vertices, n_par), here n_vertices=1) since callers
+    # (e.g. `check_intersection`, `ran_cset`, `centroid_cset`, `mne_cset`)
+    # index vertices by row.
+    if np.all(vec_min == vec_max):
+        return np.atleast_2d(vec_min)
 
     # Define the (in)equalities (i.e., get the H-representation of the credal set)
     n_par = len(vec_min)
@@ -814,7 +914,11 @@ def vertices_cn(bn_min, bn_max, n_bns=None, seed=42, verbose=False):
     """
     dag = gum.BayesNet(bn_min)
 
-    names = dag.names()
+    # bn.names() returns a Python set, whose iteration order is randomized
+    # per-process (via PYTHONHASHSEED) -- sort for reproducibility, since
+    # the `seed` argument below is otherwise silently ineffective across
+    # process boundaries (e.g. a multiprocessing worker).
+    names = sorted(dag.names())
 
     if n_bns is None:
 
@@ -872,9 +976,19 @@ def sample_from_cn(bn_min, bn_max, n_bns: int) -> list:
     # Get the DAG and extreme BNs
     dag = gum.BayesNet(bn_min)
 
+    # bn.names() returns a Python set, whose iteration order is randomized
+    # per-process (via PYTHONHASHSEED); sort so each variable consistently
+    # gets the SAME seed_offset (and hence the same hopsy sampling seed,
+    # via sample_from_cpts's `hash((seed_offset, row))`) regardless of which
+    # process runs this -- otherwise two runs of the identical (bn_min,
+    # bn_max) credal set silently produce different samples whenever run in
+    # separate processes (e.g. multiprocessing workers), even though every
+    # seed involved is nominally deterministic.
+    names = sorted(dag.names())
+
     # For each variable ...
     cpts_dict = {}
-    for i, var in enumerate(dag.names()):
+    for i, var in enumerate(names):
 
         # ... sample `n_bns` CPTs from the CN
         cpts_dict[var] = sample_from_cpts(bn_min.cpt(var), bn_max.cpt(var), n_bns, seed_offset=i)
@@ -887,7 +1001,7 @@ def sample_from_cn(bn_min, bn_max, n_bns: int) -> list:
         bn = gum.BayesNet(dag)
 
         # ... and fill its CPTs
-        for var in dag.names():
+        for var in names:
             bn.cpt(var).fillWith(cpts_dict[var][i])
 
         bns.append(bn)
@@ -896,7 +1010,7 @@ def sample_from_cn(bn_min, bn_max, n_bns: int) -> list:
         safe_assert(check_consistency(bn, bn_min, bn_max) == 0)
 
     # Debug
-    safe_assert(len(cpts_dict) == len(dag.names()))
+    safe_assert(len(cpts_dict) == len(names))
     safe_assert(len(bns) == n_bns)
 
     return bns
@@ -906,8 +1020,8 @@ def sample_from_cn(bn_min, bn_max, n_bns: int) -> list:
 def sample_from_cpts(cpt_min, cpt_max, n_bns, seed_offset = 0) -> list:
 
     # Transform CPTs into pandas dataframes
-    cpt_min = np.atleast_2d(cpt_min.topandas())
-    cpt_max = np.atleast_2d(cpt_max.topandas())
+    cpt_min = get_tabular_cpt(cpt_min)
+    cpt_max = get_tabular_cpt(cpt_max)
 
     # For each row in the CPT ...
     credal_dict = {}
@@ -988,9 +1102,9 @@ def check_consistency(bn, bn_min, bn_max, verbose=False) -> int:
     n_issues = 0
 
     for var in bn.names():
-        bn_cpt = np.atleast_2d(bn.cpt(var).topandas())
-        bn_min_cpt = np.atleast_2d(bn_min.cpt(var).topandas())
-        bn_max_cpt = np.atleast_2d(bn_max.cpt(var).topandas())
+        bn_cpt = get_tabular_cpt(bn.cpt(var))
+        bn_min_cpt = get_tabular_cpt(bn_min.cpt(var))
+        bn_max_cpt = get_tabular_cpt(bn_max.cpt(var))
 
         # Check if probabilities sum to 1
         sum_vec = np.sum(bn_cpt, axis=1)

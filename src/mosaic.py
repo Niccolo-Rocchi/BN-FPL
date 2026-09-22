@@ -15,8 +15,10 @@ from src.utils import (
     get_cpt_index,
     get_cpt_shape,
     get_min_max_bns,
+    get_parent_confs,
     get_tabular_cpt,
     learn_bn_params,
+    mle_bn_from_counts,
     vac_cn,
     vertices_cset,
 )
@@ -174,6 +176,7 @@ class PriorCPT(CN_CPT):
         self.clients = None
         self.weighting = None
         self.intersection_matrix = None
+        self.intersection_frac = None
 
     def set_clients(self, clients_list: list):
         """
@@ -190,41 +193,51 @@ class PriorCPT(CN_CPT):
         """
         Compute a convex combination of prior clients' CPTs,
         where the weighting method is `weighting`.
+
+        Rows (parent configurations) for which no candidate client contributes
+        to the prior -- either because there are no candidate clients at all,
+        or because `intersection=True` and none of them intersects `self` --
+        are left vacuous, i.e. the prior is [0, 1] there (Eq. `s_oper`,
+        S(\\emptyset) = \\Delta_s), meaning no update takes place for that row.
         """
 
-        # Do not compute if already computed
-        # if not self.vacuous: return self.get()
-
-        # One prior client case
-        if len(self.clients) == 2:
-            new_cpt_min, new_cpt_max = self.clients[1].get_cset(self.var)
-            return new_cpt_min, new_cpt_max
+        self.weighting = weighting
+        n_candidates = len(self.clients) - 1
 
         # Extract the prior clients' CPTs related to self.var
-        self.weighting = weighting
-        cpts = np.zeros((2, *self.shape, len(self.clients) - 1))
-        for i in range(len(self.clients) - 1):
+        cpts = np.zeros((2, *self.shape, n_candidates))
+        for i in range(n_candidates):
             c = self.clients[i + 1]
             cpt_min, cpt_max = c.get_cset(self.var)
             cpts[0, ..., i] = get_tabular_cpt(cpt_min)
             cpts[1, ..., i] = get_tabular_cpt(cpt_max)
 
         # Weighted average of prior clients' CPTs
-        I = np.ones((self.shape[0], len(self.clients) - 1))  # 1 = intersection
+        I = np.ones((self.shape[0], n_candidates))  # weighting factor (post intersection/ssize filtering)
+        I_bin = np.ones((self.shape[0], n_candidates))  # 1 = intersects (diagnostic, always computed)
         for row in range(I.shape[0]):
             self_vertices = self.clients[0].cn.cpts[self.var].vertices[row]
             for c in range(I.shape[1]):
                 c_vertices = self.clients[c + 1].cn.cpts[self.var].vertices[row]
-                if intersection and not check_intersection(self_vertices, c_vertices):
+                does_intersect = check_intersection(self_vertices, c_vertices)
+                I_bin[row, c] = float(does_intersect)
+                if intersection and not does_intersect:
                     I[row, c] = 0
                 if self.weighting == "ssize":
                     I[row, c] *= self.clients[c + 1].data.shape[0]
-                elif self.weighting == "unif":
-                    continue
+
+        # Diagnostic: fraction of candidate clients intersecting `self`, per row
+        self.intersection_frac = (
+            I_bin.mean(axis=-1) if n_candidates > 0 else np.full(self.shape[0], np.nan)
+        )
+
         I_sum = np.sum(I, axis=-1, keepdims=True)
-        if intersection and np.any(I_sum == 0):
+        vacuous_rows = I_sum[:, 0] == 0
+        if np.any(vacuous_rows):
             warnings.warn(
-                f"Non-overlap with all clients in at least one parent configuration for variable {self.var}."
+                f"No client contributes to the prior for variable {self.var} "
+                f"in {int(np.sum(vacuous_rows))} parent configuration(s); "
+                "falling back to a vacuous prior there."
             )
 
         W = np.divide(I, I_sum, out=np.zeros_like(I, dtype=float), where=I_sum != 0)
@@ -232,9 +245,15 @@ class PriorCPT(CN_CPT):
         cpts_sum = np.sum(cpts_weighted, axis=-1)
 
         new_cpt_min, new_cpt_max = cpts_sum[0, ...], cpts_sum[1, ...]
+        new_cpt_min[vacuous_rows, :] = 0.0
+        new_cpt_max[vacuous_rows, :] = 1.0
 
         # Debug
-        safe_assert(np.all(np.sum(W, axis=-1)) < 1 + 1e-6)
+        non_vacuous = ~vacuous_rows
+        safe_assert(
+            not np.any(non_vacuous)
+            or np.all(np.sum(W[non_vacuous], axis=-1) < 1 + 1e-6)
+        )
         safe_assert(np.all(new_cpt_min < new_cpt_max + 1e-6))
 
         self.intersection_matrix = I
@@ -294,7 +313,7 @@ class PriorCN(CN):
         clients_list: list,
         weighting: str = None,
         intersection: bool = False,
-    ):
+    ) -> np.array:
 
         # Compute the CPT
         self.cpts[var].set_clients(clients_list)
@@ -303,13 +322,23 @@ class PriorCN(CN):
         # Update the CPT
         self.update_cpt(var, result)
 
-    # Compute all prior CPTs
+        return self.cpts[var].intersection_frac
+
+    # Compute all prior CPTs. Returns the median (over all variables and parent
+    # configurations in the network) fraction of candidate clients whose credal
+    # set intersects the target client's one -- a diagnostic of how much genuine
+    # overlap is available across the whole network, regardless of `weighting`.
     def compute(
         self, clients_list: list, weighting: str = None, intersection: bool = False
-    ):
+    ) -> float:
 
+        fracs = []
         for var in self.names():
-            self.compute_cpt(var, clients_list, weighting, intersection)
+            fracs.append(self.compute_cpt(var, clients_list, weighting, intersection))
+        fracs = np.concatenate(fracs)
+        fracs = fracs[~np.isnan(fracs)]
+
+        return float(np.median(fracs)) if len(fracs) > 0 else float("nan")
 
 
 # Class for a client
@@ -333,6 +362,7 @@ class Client:
         # Set other args to None
         self.data = None
         self.bn = None
+        self.bn_mle = None
         self.bn_counts = None
         self.cn = None
         self.ess = None
@@ -341,7 +371,7 @@ class Client:
         new = self.__class__.__new__(self.__class__)
         memo[id(self)] = new
         for k, v in self.__dict__.items():
-            if k in ["gt", "mask", "bn", "bn_counts"]:
+            if k in ["gt", "mask", "bn", "bn_mle", "bn_counts"]:
                 if getattr(self, k) is None:
                     setattr(new, k, None)
                 else:
@@ -396,6 +426,11 @@ class Client:
         """
         self.check(["data", "bn"])
         self.bn_counts = get_bn_counts(self.bn, self.data)
+        # The exact (unsmoothed) MLE, kept separate from `self.bn` -- see
+        # `mle_bn_from_counts`. Use this, not `self.bn`, whenever the true
+        # theta_hat is needed (evaluation/reference curves, the MOSAIC
+        # update rule).
+        self.bn_mle = mle_bn_from_counts(self.bn_counts)
         cn = gum.CredalNet(self.bn_counts)
 
         cn.idmLearning(ess)
@@ -429,26 +464,25 @@ class Client:
         Update the `var`'s CPT by MOSAIC.
         """
 
-        self.check(["cn", "bn", "bn_counts"])
+        self.check(["cn", "bn", "bn_mle", "bn_counts"])
 
         prior_cpt_min, prior_cpt_max = self.prior_cn.cpt(var)
 
-        cpt_mle = get_tabular_cpt(self.bn.cpt(var))
+        # The exact (unsmoothed) empirical MLE (`self.bn_mle`, see
+        # `mle_bn_from_counts`), NOT `self.bn` (learned with a small smoothing
+        # prior, see `learn_bn_params`). This must match, term by term, the
+        # N[x|pi_X]/N[pi_X] used by `idmLearning` for the update rule to
+        # satisfy K^{e+} = K^e under a vacuous prior (see the vacuous-prior
+        # remark in cap6_extract.tex, Sec. "Local Learning & Update") --
+        # `self.bn`'s smoothing would introduce a small but non-zero mismatch.
+        cpt_mle = get_tabular_cpt(self.bn_mle.cpt(var))
         cpt_counts = get_tabular_cpt(self.bn_counts.cpt(var))
         ess = self.ess
 
         new_cpts = np.zeros((2, *cpt_mle.shape))
 
-        index = self.bn.cpt(var).topandas().index
-        index_df = index.to_frame(index=False)
-
         # For every parent configuration ...
-        parents_conf = (
-            [dict(index_df.iloc[i]) for i in range(len(index_df))]
-            if len(self.bn.parents(var)) != 0
-            else [None]
-        )
-        for parents in parents_conf:
+        for parents in get_parent_confs(self.bn, var):
 
             parents_idx = get_cpt_index(self.bn, var, parents)
 

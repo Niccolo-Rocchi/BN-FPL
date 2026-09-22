@@ -26,6 +26,7 @@ def process_rep(rep, sizes, res_path, bn_base_path, n_bns, targ):
     bn_list = []
     idm_list = []
     mos_list = []
+    intersection_list = []
     for n in sizes:
         base_path = res_path / f"ss{n}"
 
@@ -43,7 +44,15 @@ def process_rep(rep, sizes, res_path, bn_base_path, n_bns, targ):
         mos_bn_max = gum.loadBN(f"{base_path}/{rep}-mos_bn_max.bif")
         mos_list.append((mos_bn_min, mos_bn_max))
 
+        # Network-wide median fraction of clients intersecting the prior
+        try:
+            with open(f"{base_path}/{rep}-intersection.txt") as f:
+                intersection_list.append(float(f.read()))
+        except FileNotFoundError:
+            intersection_list.append(np.nan)
+
     res = pd.DataFrame({"size": sizes})
+    res["intersection_frac"] = intersection_list
 
     for label in ["idm", "mos"]:
 
@@ -55,20 +64,26 @@ def process_rep(rep, sizes, res_path, bn_base_path, n_bns, targ):
             # Choose the CN
             bn_min, bn_max = eval(list_str)[i]
 
-            # Vertices (for max JSD)
+            # Max JSD: JSD(bn_base, .) is convex in its second argument, so
+            # its maximum over the credal set's strong extension is attained
+            # exactly at one of the (exhaustively enumerated) vertices --
+            # this is not an approximation.
             vertices_bns = vertices_cn(bn_min, bn_max, n_bns=None)
+            vertex_results = jsd_bounds_from_samples(bn_base, vertices_bns, target=targ)
 
-            # Inner points (for min JSD)
+            # Min and mean JSD: both approximated by sampling `n_bns` BNs
+            # from the credal set's interior (cap6_extract.tex, Evaluation).
+            # These must NOT be mixed with `vertices_bns`: there can be
+            # orders of magnitude more vertices than samples (e.g. up to
+            # 2^10 = 1024 for the Cancer network vs. n_bns=50), which would
+            # make "mean" an average dominated by extreme points instead of
+            # a genuine sampling-based estimate.
             sampled_bns = sample_from_cn(bn_min, bn_max, n_bns=n_bns)
+            sample_results = jsd_bounds_from_samples(bn_base, sampled_bns, target=targ)
 
-            # All BNs
-            all_bns = vertices_bns + sampled_bns
-
-            # Results
-            results = jsd_bounds_from_samples(bn_base, all_bns, target=targ)
-            min_list.append(results["min"])
-            max_list.append(results["max"])
-            mean_list.append(results["mean"])
+            min_list.append(sample_results["min"])
+            max_list.append(vertex_results["max"])
+            mean_list.append(sample_results["mean"])
 
         res[f"{label}_min"] = min_list
         res[f"{label}_max"] = max_list
