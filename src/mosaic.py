@@ -257,11 +257,12 @@ class PriorCPT(CN_CPT):
         I_sum = np.sum(I, axis=-1, keepdims=True)
         vacuous_rows = I_sum[:, 0] == 0
         if np.any(vacuous_rows):
-            warnings.warn(
-                f"No client contributes to the prior for variable {self.var} "
-                f"in {int(np.sum(vacuous_rows))} parent configuration(s); "
-                "falling back to a vacuous prior there."
-            )
+            # warnings.warn(
+            #     f"No client contributes to the prior for variable {self.var} "
+            #     f"in {int(np.sum(vacuous_rows))} parent configuration(s); "
+            #     "falling back to a vacuous prior there."
+            # )
+            pass
 
         W = np.divide(I, I_sum, out=np.zeros_like(I, dtype=float), where=I_sum != 0)
         cpts_weighted = cpts * W[None, :, None, :]

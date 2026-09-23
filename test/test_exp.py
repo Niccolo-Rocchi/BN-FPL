@@ -1,14 +1,13 @@
 """
-Tests for exp.py: the end-to-end local learning & update pipeline (one
-sample size, a handful of repetitions, no multiprocessing -- `exp()` is
-called directly with `_init_worker`'s globals set up by hand).
+Tests for exp.py: the end-to-end local learning & update pipeline.
 
-exp() computes the JSD statistics in-memory (merged from the old JSD.py) and
-returns (row, models, task_id): `row` is the JSD summary dict (destined for
-df_tot.csv), `models` is a dict of raw CPT snapshots (destined for the
-grid-wide models.pkl, kept for the future global optimization phase), and
-`task_id` is the (n_clients, ess, prob_shift, alpha, size, rep) key used to
-index it there.
+exp(config, n, rep) is fully self-contained (no worker-global state, so it
+is called directly here with an explicit config -- no pool/initializer
+needed) and returns (row, models, task_id): `row` is the JSD summary dict
+(destined for df_tot.csv), `models` is a dict of raw CPT snapshots (destined
+for the grid-wide models.pkl, kept for the future global optimization
+phase), and `task_id` is the (n_clients, ess, prob_shift, alpha, size, rep)
+key used to index it there.
 """
 
 import copy
@@ -64,8 +63,7 @@ def clients_template():
 
 
 def test_exp_returns_expected_schema_and_sane_values():
-    exp_mod._init_worker(0, BASE_CONFIG)
-    row, models, task_id = exp_mod.exp(50, rep=0)
+    row, models, task_id = exp_mod.exp(BASE_CONFIG, 50, rep=0)
 
     assert set(row.keys()) == EXPECTED_ROW_KEYS
     assert row["size"] == 50 and row["rep"] == 0
@@ -89,8 +87,7 @@ def test_exp_models_snapshot_is_well_formed():
     # future reader never has to separately reconstruct a gum.BayesNet (and
     # risk using cpt.topandas()'s row order by mistake) to know what each
     # row/column means.
-    exp_mod._init_worker(0, BASE_CONFIG)
-    row, models, task_id = exp_mod.exp(50, rep=0)
+    row, models, task_id = exp_mod.exp(BASE_CONFIG, 50, rep=0)
 
     assert set(models.keys()) == EXPECTED_MODEL_KEYS
     bn_base = gum.loadBN(BASE_CONFIG["bn_base_path"])
@@ -117,10 +114,9 @@ def test_exp_models_snapshot_is_well_formed():
 @pytest.mark.parametrize("client_num", [0, 2, 4])
 def test_exp_works_for_any_client_num(client_num):
     config = dict(BASE_CONFIG, client_num=client_num)
-    exp_mod._init_worker(client_num, config)
 
     # Must not raise, regardless of which client is the update target.
-    row, models, task_id = exp_mod.exp(50, rep=0)
+    row, models, task_id = exp_mod.exp(config, 50, rep=0)
     assert set(row.keys()) == EXPECTED_ROW_KEYS
     assert set(models.keys()) == EXPECTED_MODEL_KEYS
 
@@ -132,27 +128,90 @@ def test_different_reps_produce_different_data():
     # an identical RNG state, so distinct repetitions processed by different
     # (freshly-forked) workers silently produced byte-for-byte identical
     # client-0 data -- visible here as an identical "mle" JSD value.
-    exp_mod._init_worker(0, BASE_CONFIG)
-
-    row0, _, _ = exp_mod.exp(40, rep=0)
-    row1, _, _ = exp_mod.exp(40, rep=1)
+    row0, _, _ = exp_mod.exp(BASE_CONFIG, 40, rep=0)
+    row1, _, _ = exp_mod.exp(BASE_CONFIG, 40, rep=1)
 
     assert row0["mle"] != row1["mle"]
 
 
 def test_same_task_is_reproducible():
-    # The reseeding fix must not break reproducibility: the SAME (n, rep)
-    # run twice must give identical results.
-    exp_mod._init_worker(0, BASE_CONFIG)
-
-    row_a, _, task_id_a = exp_mod.exp(40, rep=0)
-    row_b, _, task_id_b = exp_mod.exp(40, rep=0)
+    # The reseeding fix must not break reproducibility: the SAME (config, n,
+    # rep) run twice must give identical results.
+    row_a, _, task_id_a = exp_mod.exp(BASE_CONFIG, 40, rep=0)
+    row_b, _, task_id_b = exp_mod.exp(BASE_CONFIG, 40, rep=0)
 
     assert task_id_a == task_id_b
     for key in EXPECTED_ROW_KEYS:
         # atol handles residual float non-associativity (e.g. multi-threaded
         # BLAS summation order) between two otherwise identical runs.
         assert np.isclose(row_a[key], row_b[key], atol=1e-9), key
+
+
+def test_different_hyperparameter_combinations_do_not_cross_contaminate():
+    # exp() is fully stateless (no worker-global config): this is what makes
+    # it safe for main()'s flattened pool to freely interleave tasks from
+    # DIFFERENT hyperparameter combinations across all workers at once,
+    # instead of processing one combination at a time. Simulated here by
+    # interleaving two configs that differ in n_clients (so they produce
+    # differently-sized `clients` dicts) for the SAME (n, rep): each call
+    # must reflect only its own config, regardless of call order, and must
+    # be independently reproducible.
+    config_a = dict(BASE_CONFIG, n_clients=5)
+    config_b = dict(BASE_CONFIG, n_clients=9)
+
+    row_a1, _, id_a1 = exp_mod.exp(config_a, 40, rep=0)
+    row_b1, _, id_b1 = exp_mod.exp(config_b, 40, rep=0)
+    row_a2, _, id_a2 = exp_mod.exp(config_a, 40, rep=0)
+    row_b2, _, id_b2 = exp_mod.exp(config_b, 40, rep=0)
+
+    assert row_a1["n_clients"] == row_a2["n_clients"] == 5
+    assert row_b1["n_clients"] == row_b2["n_clients"] == 9
+    assert id_a1 == id_a2 and id_b1 == id_b2
+    assert id_a1 != id_b1
+
+    assert np.isclose(row_a1["mle"], row_a2["mle"], atol=1e-9)
+    assert np.isclose(row_b1["mle"], row_b2["mle"], atol=1e-9)
+
+
+def test_build_tasks_covers_every_combination_exactly_once():
+    # Direct test for the CSV-attribution concern: every (hyperparameter
+    # combination, size, rep) must appear in the flattened task list exactly
+    # once, each carrying its OWN correctly-resolved hyperparameter values
+    # (not e.g. always the last combination's, a classic late-binding-
+    # closure bug this dict-per-task design avoids).
+    config = dict(
+        BASE_CONFIG,
+        n_clients=[5, 9],
+        ess=[1, 2],
+        prob_shift=[0.0],
+        alpha=[10],
+        n_repetitions=2,
+    )
+    sizes = [10, 20]
+
+    tasks = exp_mod.build_tasks(config, sizes)
+
+    assert len(tasks) == 2 * 2 * 1 * 1 * len(sizes) * config["n_repetitions"]
+
+    seen = set()
+    for combo_config, n, rep in tasks:
+        key = (combo_config["n_clients"], combo_config["ess"], n, rep)
+        assert key not in seen, f"duplicate task: {key}"
+        seen.add(key)
+
+        # every non-grid key is carried over unchanged from the base config
+        assert combo_config["alpha"] == 10
+        assert combo_config["prob_shift"] == 0.0
+        assert combo_config["bn_base_path"] == BASE_CONFIG["bn_base_path"]
+
+    expected_keys = {
+        (nc, ess, n, rep)
+        for nc in (5, 9)
+        for ess in (1, 2)
+        for n in sizes
+        for rep in range(2)
+    }
+    assert seen == expected_keys
 
 
 def test_prior_clients_excludes_target_regardless_of_client_num(clients_template):

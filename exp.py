@@ -9,6 +9,7 @@ import traceback
 import numpy as np
 import pandas as pd
 import pyagrum as gum
+from tqdm import tqdm
 
 from src.utils import jsd_bn, jsd_credal_stats, perturb_bn_params, snapshot_cpts
 
@@ -29,16 +30,6 @@ WEIGHTING_SCHEMES = (1, 2, 3)
 # conf.yaml, even when it holds a single value. One full (s_sizes x
 # n_repetitions x WEIGHTING_SCHEMES) sweep is run per combination.
 GRID_KEYS = ("n_clients", "ess", "prob_shift", "alpha")
-
-# No pickling
-_client_num = None
-_config = None
-
-
-def _init_worker(client_num, config):
-    global _client_num, _config
-    _client_num = client_num
-    _config = config
 
 
 def init_clients(config, verbose=False) -> list:
@@ -68,22 +59,31 @@ def init_clients(config, verbose=False) -> list:
     return clients
 
 
-def exp(n, rep) -> tuple:
+def exp(config, n, rep) -> tuple:
+    """
+    Fully self-contained: everything needed (including every hyperparameter
+    combination's own config) is passed in as an argument, nothing is read
+    from worker-global state. This is what lets main() freely interleave
+    tasks from DIFFERENT hyperparameter combinations across all workers in
+    a single flat pool, instead of processing one combination at a time.
+    """
     # Each (n, rep) task needs its own independent random stream. The worker
     # pool uses "fork", so sibling worker processes inherit an IDENTICAL RNG
     # state at fork time; without reseeding here, several "repetitions"
     # processed by distinct, freshly-forked workers would silently generate
     # IDENTICAL data (confirmed empirically: client 0's data was byte-for-
     # byte identical across repetitions for several sample sizes). The seed
-    # is still fully reproducible given (n, rep) -- and, transitively, given
-    # the grid combination, since a fresh worker pool/task_seed applies per
-    # combination too (see main()).
+    # is still fully reproducible given (n, rep) -- deliberately NOT mixed
+    # with the hyperparameter combination, so different combinations use
+    # "matched" randomness for the same (n, rep) (common random numbers),
+    # making cross-combination comparisons a bit less noisy; this has no
+    # bearing on correctness, since each task still reseeds independently
+    # before generating its own data.
     task_seed = hash((n, rep)) % (2**32)
     np.random.seed(task_seed)
     gum.initRandom(task_seed)
 
-    config = _config
-    client_num = _client_num
+    client_num = config["client_num"]
     n_bns = config["n_bns"]
     bn_base = gum.loadBN(config["bn_base_path"])
 
@@ -174,6 +174,29 @@ def _exp_star(args):
         return None, None, None
 
 
+def build_tasks(config, sizes) -> list:
+    """
+    Flatten every (hyperparameter combination x size x repetition) into a
+    single task list, `[(combo_config, n, rep), ...]`, so all n_jobs workers
+    stay busy for the WHOLE grid in one pool (see main()). Submitting only
+    n_repetitions tasks at a time (one size, one combination at a time) --
+    the previous design -- left most cores idle whenever n_repetitions <
+    n_jobs (e.g. 2 repetitions on a 15-worker pool: 13 idle, every batch).
+    Each task carries its own fully-resolved hyperparameter combination
+    (`combo_config`), so tasks from different combinations can be freely
+    interleaved across workers, in any order, without cross-contamination:
+    exp() reads everything from its own `config` argument, never from
+    shared/global state.
+    """
+    grid_values = [config[k] for k in GRID_KEYS]
+    return [
+        (dict(config, **dict(zip(GRID_KEYS, combo))), n, rep)
+        for combo in itertools.product(*grid_values)
+        for n in sizes
+        for rep in range(config["n_repetitions"])
+    ]
+
+
 def main():
 
     # Set seed
@@ -186,44 +209,38 @@ def main():
     res_path = Path(config["res_path"])
     create_clean_dir(res_path)
 
-    client_num = config["client_num"]
-
     sizes_dict = config["s_sizes"]
     sizes = [
         int(x)
         for x in np.arange(sizes_dict["min"], sizes_dict["max"], sizes_dict["step"])
     ]
 
-    grid_values = [config[k] for k in GRID_KEYS]
+    tasks = build_tasks(config, sizes)
+    n_combos = 1
+    for v in (config[k] for k in GRID_KEYS):
+        n_combos *= len(v)
+    print(
+        f"# {n_combos} hyperparameter combinations x {len(sizes)} sizes x "
+        f"{config['n_repetitions']} repetitions = {len(tasks)} total tasks "
+        f"on {n_jobs} workers",
+        flush=True,
+    )
 
+    # Workers only ever RETURN (row, models, task_id) tuples through the
+    # pool -- they never touch the filesystem. df_tot.csv/models.pkl are
+    # written exactly once, here, after every task has completed, so there
+    # is no concurrent-write risk regardless of how many workers run.
     rows = []
     models_by_task = {}
     ctx = mp.get_context("fork")
-
-    # One full sweep (all sizes x repetitions x weighting schemas) per
-    # hyperparameter combination. A single flattened pool across all
-    # combinations would keep workers slightly busier between combinations,
-    # but recreating the pool per combination is simpler and, since each
-    # combination's own sweep already saturates all workers, the difference
-    # is marginal.
-    for combo in itertools.product(*grid_values):
-        combo_config = dict(config, **dict(zip(GRID_KEYS, combo)))
-        print("# Hyperparameters: ", dict(zip(GRID_KEYS, combo)), flush=True)
-
-        with ctx.Pool(
-            processes=n_jobs,
-            initializer=_init_worker,
-            initargs=(client_num, combo_config),
-        ) as pool:
-            for n in sizes:
-                print("# Sample size: ", n, flush=True)
-
-                tasks = [(n, rep) for rep in range(combo_config["n_repetitions"])]
-                for row, models, task_id in pool.map(_exp_star, tasks):
-                    if row is None:
-                        continue
-                    rows.append(row)
-                    models_by_task[task_id] = models
+    with ctx.Pool(processes=n_jobs) as pool:
+        for row, models, task_id in tqdm(
+            pool.imap_unordered(_exp_star, tasks), total=len(tasks)
+        ):
+            if row is None:
+                continue
+            rows.append(row)
+            models_by_task[task_id] = models
 
     df_tot = pd.DataFrame(rows)
     df_tot.to_csv(res_path / "df_tot.csv", index=False)
