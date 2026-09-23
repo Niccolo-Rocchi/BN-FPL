@@ -60,7 +60,7 @@ def vac_cn(bn: gum.BayesNet):
 # Perturb BN parameters with probability `prob` and concentration `alpha`
 def perturb_bn_params(bn: gum.BayesNet, alpha: float, prob: float = 1.0) -> gum.BayesNet:
     """
-    Each conditional X|\pi_X is perturbed with probability `prob`.
+    Each conditional X|pi_X is perturbed with probability `prob`.
     The perturbed row is drawn from Dirichlet(alpha * row), which is
     centered exactly on the original row (E[p_new] = row) with
     Var[p_new_i] = row_i*(1-row_i)/(alpha+1): larger `alpha` means a
@@ -103,7 +103,7 @@ def resample_bn_params(
 ) -> gum.BayesNet:
     """
     Copy the `bn` structure and resample its parameters from a Dirichlet distribution.
-    Here, `prob` is the probability that a conditional X|\pi_X is resampled.
+    Here, `prob` is the probability that a conditional X|pi_X is resampled.
     The output is the resampled BN (`bn_new`) and a mask BN (`bn_mask`).
     The latter indicates the differences between `bn` and `bn_new` (1 = equal, 0 = different).
     """
@@ -289,7 +289,7 @@ def get_joint(bn:gum.BayesNet, names:list):
 # Compute the KL between a cset and the ground-truth distribution
 def get_kl_cset(cn: tuple, gt: gum.BayesNet, var, parents):
     """
-    Let X|\pa_X be a conditional distribution.
+    Let X|pi_X be a conditional distribution.
     The function returns the KL between a credal set in `cn` and the ground-truth (in `gt`).
     The KL is computed as the maximum KL over the vertices of the cset.
     `cn` is a tuple of (bn_min, bn_max).
@@ -329,8 +329,8 @@ def get_kl_cset(cn: tuple, gt: gum.BayesNet, var, parents):
 # Compute the KL between the learned distribution and the ground-truth one
 def get_kl(bn: gum.BayesNet, gt: gum.BayesNet, var, parents):
     """
-    Let X|\pa_X be a conditional distribution.
-    The function returns the KL between a given distribution X|\pa_X
+    Let X|pi_X be a conditional distribution.
+    The function returns the KL between a given distribution X|pi_X
     of a BN (`bn`) and its ground-truth (`gt`).
     """
 

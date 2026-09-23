@@ -13,7 +13,6 @@ from tqdm import tqdm
 
 from src.utils import jsd_bn, jsd_credal_stats, perturb_bn_params, snapshot_cpts
 
-sys.path.insert(0, str(Path().resolve().parents[1]))
 from src.config import create_clean_dir, load_config, set_seed
 from src.mosaic import Client
 
