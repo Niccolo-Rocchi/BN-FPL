@@ -4,15 +4,16 @@ n_clients: 10   # 10 and 20
 client_num: 0
 s_sizes: 
   min: 5
-  max: 505
+  max: 110
   step: 25
 ess: 2          # 2 and 5
 alpha: 20       # Dirichlet concentration for parameter perturbation (higher = smaller shift)
 prob_shift: 0.5 # Probability of shift in parameters between clients. 0: iid data.
-prior_args: 
-  weighting: unif
-  intersection: True
+# weighting: 1 = equal contributions, no filtering
+#            2 = equal contributions, hard intersection cutoff
+#            3 = equal contributions, soft cutoff via JSD-proximity to the target's MLE
+weighting: 3
 res_path: results
 bn_base_path: ./cancer.bif
-n_repetitions: 100
-n_bns: 100
+n_repetitions: 20
+n_bns: 30

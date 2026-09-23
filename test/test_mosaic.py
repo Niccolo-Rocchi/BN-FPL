@@ -9,13 +9,15 @@ pyagrum's CredalNet/BIF round trip -- see BIF_ATOL below) so expected values
 can be hand-computed and checked with tight tolerances.
 """
 
+import warnings
+
 import numpy as np
 import pyagrum as gum
 import pytest
 
 from src.config import set_seed
 from src.mosaic import CN, CN_CPT, Client, PriorCN
-from src.utils import get_cpt_shape
+from src.utils import get_cpt_shape, jsd
 
 # See test_utils.py: pyagrum's BIF writer (used internally whenever a CN is
 # built from a gum.CredalNet, e.g. Client.learn_cn) truncates to ~6
@@ -72,8 +74,13 @@ def _cn_from_bounds(bn_min, bn_max):
     return cn
 
 
-def _make_client_with_cset(p_min, p_max, n_data=100):
-    """A client whose credal set for X is exactly [p_min, p_max] (no IDM/BIF)."""
+def _make_client_with_cset(p_min, p_max, n_data=100, mle=None):
+    """
+    A client whose credal set for X is exactly [p_min, p_max] (no IDM/BIF).
+    Also sets bn_mle (needed when this client is the *target* of weighting=3,
+    which reads its own MLE as the JSD reference point), defaulting to the
+    credal set's own midpoint if not given explicitly.
+    """
     bn = _base_bn()
     mask = gum.BayesNet(bn)
     for n in mask.nodes():
@@ -84,7 +91,13 @@ def _make_client_with_cset(p_min, p_max, n_data=100):
     bn_min.cpt("X").fillWith(list(p_min))
     bn_max.cpt("X").fillWith(list(p_max))
     c.cn = _cn_from_bounds(bn_min, bn_max)
-    c.data = np.zeros((n_data, 1))  # only .shape[0] is used (ssize weighting)
+    c.data = np.zeros((n_data, 1))
+
+    if mle is None:
+        mle = ((np.array(p_min) + np.array(p_max)) / 2).tolist()
+    c.bn_mle = gum.BayesNet(bn)
+    c.bn_mle.cpt("X").fillWith(list(mle))
+
     return c
 
 
@@ -165,7 +178,7 @@ def test_cn_cpt_vertices_within_bounds():
 # --------------------------------------------------------------------------
 
 
-def test_prior_unif_weighting_is_simple_average_of_bounds():
+def test_prior_weighting1_is_simple_average_of_bounds():
     target = _make_client_with_cset(*_seg(0.35, 0.55))
     c1_min, c1_max = _seg(0.1, 0.3)
     c2_min, c2_max = _seg(0.5, 0.7)
@@ -173,56 +186,34 @@ def test_prior_unif_weighting_is_simple_average_of_bounds():
     c2 = _make_client_with_cset(c2_min, c2_max)
 
     target.reset_prior()
-    target.prior_cn.compute([target, c1, c2], weighting="unif", intersection=False)
+    target.prior_cn.compute([target, c1, c2], weighting=1)
 
     prior_min, prior_max = target.prior_cn.cpt("X")
     assert np.allclose(prior_min, [(np.array(c1_min) + np.array(c2_min)) / 2])
     assert np.allclose(prior_max, [(np.array(c1_max) + np.array(c2_max)) / 2])
 
 
-def test_prior_ssize_weighting_proportional_to_sample_size():
-    target = _make_client_with_cset([0.0, 0.0], [1.0, 1.0])
-    c1_min, c1_max = _seg(0.1, 0.3)
-    c2_min, c2_max = _seg(0.6, 0.8)
-    c1 = _make_client_with_cset(c1_min, c1_max, n_data=10)
-    c2 = _make_client_with_cset(c2_min, c2_max, n_data=90)
-
-    target.reset_prior()
-    target.prior_cn.compute([target, c1, c2], weighting="ssize", intersection=False)
-
-    prior_min, prior_max = target.prior_cn.cpt("X")
-    w1, w2 = 10 / 100, 90 / 100
-    expected_min = w1 * np.array(c1_min) + w2 * np.array(c2_min)
-    expected_max = w1 * np.array(c1_max) + w2 * np.array(c2_max)
-    assert np.allclose(prior_min, [expected_min])
-    assert np.allclose(prior_max, [expected_max])
-
-
-def test_prior_intersection_true_all_overlap_equals_unif():
+def test_prior_weighting2_all_overlap_equals_weighting1():
     # target and both candidates share a common overlap region.
     target = _make_client_with_cset([0.3, 0.3], [0.6, 0.6])
     c1 = _make_client_with_cset([0.2, 0.2], [0.5, 0.5])
     c2 = _make_client_with_cset([0.4, 0.4], [0.7, 0.7])
 
     target.reset_prior()
-    median = target.prior_cn.compute(
-        [target, c1, c2], weighting="unif", intersection=True
-    )
+    median = target.prior_cn.compute([target, c1, c2], weighting=2)
     prior_min, prior_max = target.prior_cn.cpt("X")
     assert np.allclose(prior_min, [[0.3, 0.3]])
     assert np.allclose(prior_max, [[0.6, 0.6]])
     assert median == 1.0
 
 
-def test_prior_intersection_excludes_non_overlapping_candidate():
+def test_prior_weighting2_excludes_non_overlapping_candidate():
     target = _make_client_with_cset([0.4, 0.4], [0.6, 0.6])
     c1 = _make_client_with_cset([0.3, 0.3], [0.5, 0.5])  # overlaps
     c2 = _make_client_with_cset(*_seg(0.05, 0.15))  # does not overlap
 
     target.reset_prior()
-    median = target.prior_cn.compute(
-        [target, c1, c2], weighting="unif", intersection=True
-    )
+    median = target.prior_cn.compute([target, c1, c2], weighting=2)
     prior_min, prior_max = target.prior_cn.cpt("X")
     # Only c1 contributes.
     assert np.allclose(prior_min, [[0.3, 0.3]])
@@ -230,7 +221,7 @@ def test_prior_intersection_excludes_non_overlapping_candidate():
     assert median == 0.5  # 1 of 2 candidates intersects
 
 
-def test_prior_no_overlap_falls_back_to_vacuous_row():
+def test_prior_weighting2_no_overlap_falls_back_to_vacuous_row():
     # Regression test for the vacuous-prior bug (used to produce (0,0)).
     target = _make_client_with_cset(*_seg(0.02, 0.08))
     c1 = _make_client_with_cset(*_seg(0.8, 0.9))
@@ -238,9 +229,7 @@ def test_prior_no_overlap_falls_back_to_vacuous_row():
 
     target.reset_prior()
     with pytest.warns(UserWarning, match="falling back to a vacuous prior"):
-        median = target.prior_cn.compute(
-            [target, c1, c2], weighting="unif", intersection=True
-        )
+        median = target.prior_cn.compute([target, c1, c2], weighting=2)
 
     prior_min, prior_max = target.prior_cn.cpt("X")
     assert np.allclose(prior_min, [[0.0, 0.0]])
@@ -251,14 +240,14 @@ def test_prior_no_overlap_falls_back_to_vacuous_row():
 def test_prior_zero_candidates_is_fully_vacuous():
     target = _make_client_with_cset([0.3, 0.3], [0.6, 0.6])
     target.reset_prior()
-    target.prior_cn.compute([target], weighting="unif", intersection=True)
+    target.prior_cn.compute([target], weighting=2)
 
     prior_min, prior_max = target.prior_cn.cpt("X")
     assert np.allclose(prior_min, [[0.0, 0.0]])
     assert np.allclose(prior_max, [[1.0, 1.0]])
 
 
-def test_prior_single_candidate_respects_intersection_filter():
+def test_prior_weighting2_single_candidate_respects_intersection_filter():
     # Regression test: the former len(clients)==2 shortcut bypassed the
     # intersection filter entirely.
     target = _make_client_with_cset(*_seg(0.02, 0.08))
@@ -266,21 +255,83 @@ def test_prior_single_candidate_respects_intersection_filter():
 
     target.reset_prior()
     with pytest.warns(UserWarning):
-        target.prior_cn.compute([target, c1], weighting="unif", intersection=True)
+        target.prior_cn.compute([target, c1], weighting=2)
     prior_min, prior_max = target.prior_cn.cpt("X")
     assert np.allclose(prior_min, [[0.0, 0.0]])
     assert np.allclose(prior_max, [[1.0, 1.0]])
 
 
-def test_prior_single_candidate_overlapping_returns_its_cset():
+def test_prior_weighting2_single_candidate_overlapping_returns_its_cset():
     target = _make_client_with_cset([0.3, 0.3], [0.6, 0.6])
     c1 = _make_client_with_cset([0.2, 0.2], [0.5, 0.5])  # overlaps
 
     target.reset_prior()
-    target.prior_cn.compute([target, c1], weighting="unif", intersection=True)
+    target.prior_cn.compute([target, c1], weighting=2)
     prior_min, prior_max = target.prior_cn.cpt("X")
     assert np.allclose(prior_min, [[0.2, 0.2]])
     assert np.allclose(prior_max, [[0.5, 0.5]])
+
+
+# --------------------------------------------------------------------------
+# weighting=3: soft, JSD-based proximity to the target's own MLE.
+# --------------------------------------------------------------------------
+
+
+def test_prior_weighting3_matches_hand_computed_maxjsd_weights():
+    target = _make_client_with_cset([0.4, 0.4], [0.6, 0.6], mle=[0.5, 0.5])
+    c1 = _make_client_with_cset([0.48, 0.48], [0.52, 0.52])  # narrow, close
+    c2 = _make_client_with_cset([0.1, 0.1], [0.9, 0.9])  # wide, contains 0.5 too
+
+    target.reset_prior()
+    target.prior_cn.compute([target, c1, c2], weighting=3)
+    prior_min, prior_max = target.prior_cn.cpt("X")
+
+    mle = np.array([0.5, 0.5])
+    d1 = max(jsd(mle, v) for v in ([0.48, 0.52], [0.52, 0.48]))
+    d2 = max(jsd(mle, v) for v in ([0.1, 0.9], [0.9, 0.1]))
+    w1_raw, w2_raw = np.log(2) - d1, np.log(2) - d2
+    w1, w2 = w1_raw / (w1_raw + w2_raw), w2_raw / (w1_raw + w2_raw)
+
+    expected_min = w1 * np.array([0.48, 0.48]) + w2 * np.array([0.1, 0.1])
+    expected_max = w1 * np.array([0.52, 0.52]) + w2 * np.array([0.9, 0.9])
+    assert np.allclose(prior_min, [expected_min])
+    assert np.allclose(prior_max, [expected_max])
+
+
+def test_prior_weighting3_favors_narrow_close_over_wide_containing():
+    # Regression test for the "containment" critique: a wide candidate that
+    # merely CONTAINS the target's MLE must not automatically outweigh a
+    # narrow candidate close to it -- unlike a raw intersection-measure
+    # scheme (mu(K^e cap K^i)), which rewards width per se.
+    target = _make_client_with_cset([0.4, 0.4], [0.6, 0.6], mle=[0.5, 0.5])
+    c1 = _make_client_with_cset([0.48, 0.48], [0.52, 0.52])  # narrow, close
+    c2 = _make_client_with_cset([0.1, 0.1], [0.9, 0.9])  # wide, contains target's MLE
+
+    target.reset_prior()
+    target.prior_cn.compute([target, c1, c2], weighting=3)
+    # The resulting prior must be dominated by c1 (narrow+close): its bounds
+    # pull the prior much closer to c1's own cset than to c2's.
+    prior_min, prior_max = target.prior_cn.cpt("X")
+    assert prior_min[0, 0] > 0.3  # far above c2's min (0.1), close to c1's (0.48)
+    assert prior_max[0, 0] < 0.7  # far below c2's max (0.9), close to c1's (0.52)
+
+
+def test_prior_weighting3_never_zero_even_when_disjoint():
+    target = _make_client_with_cset(*_seg(0.02, 0.08), mle=[0.05, 0.95])
+    c1 = _make_client_with_cset(*_seg(0.8, 0.9))  # far away, disjoint from target
+
+    target.reset_prior()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # must NOT warn/fall back to vacuous
+        target.prior_cn.compute([target, c1], weighting=3)
+
+    prior_min, prior_max = target.prior_cn.cpt("X")
+    assert not np.allclose(prior_min, [[0.0, 0.0]])
+    assert not np.allclose(prior_max, [[1.0, 1.0]])
+    # A single candidate always ends up with full normalized weight.
+    c1_min, c1_max = c1.get_cset("X")
+    assert np.allclose(prior_min, [c1_min])
+    assert np.allclose(prior_max, [c1_max])
 
 
 # --------------------------------------------------------------------------
@@ -310,7 +361,7 @@ def test_prior_cn_median_over_two_variable_network():
         c.data = np.zeros((10, 1))
 
     target.reset_prior()
-    median = target.prior_cn.compute([target, c1], weighting="unif", intersection=True)
+    median = target.prior_cn.compute([target, c1], weighting=2)
 
     # X: 1 row, intersects (frac=1.0). Y: 2 rows (one per X value), neither
     # intersects (frac=0.0 each). Overall: median([1.0, 0.0, 0.0]) == 0.0.

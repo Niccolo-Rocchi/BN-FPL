@@ -10,7 +10,7 @@ import pyagrum as gum
 from src.utils import get_confs, get_kl, get_kl_cset, jsd, jsd_bn, perturb_bn_params
 
 sys.path.insert(0, str(Path().resolve().parents[1]))
-from src.config import create_clean_dir, load_config, set_seed
+from src.config import create_clean_dir, get_res_path, load_config, set_seed
 from src.mosaic import Client
 
 # Set number of threads for parallel computation
@@ -117,7 +117,9 @@ def exp(n, ss_path, rep):
     # (Re-)compute the prior for the client
     client_exp.reset_prior()
     assert client_exp.prior_cn.is_vacuous_all()
-    median_intersection = client_exp.prior_cn.compute(prior_clients, **config["prior_args"])
+    median_intersection = client_exp.prior_cn.compute(
+        prior_clients, weighting=config["weighting"]
+    )
     assert not client_exp.prior_cn.is_vacuous_any()
 
     # Run mosaic
@@ -145,9 +147,7 @@ def main():
     config = load_config("conf.yaml")
 
     # Create empty folders
-    int_str = "Int" if config["prior_args"]["intersection"] else "NoInt"
-    res_str = config["res_path"] + "_" + str(config["prob_shift"]) + "_" + int_str
-    res_path = Path(res_str) 
+    res_path = Path(get_res_path(config))
     create_clean_dir(res_path)
 
     # Choose client

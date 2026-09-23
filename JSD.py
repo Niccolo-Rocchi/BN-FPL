@@ -8,7 +8,7 @@ import pandas as pd
 import pyagrum as gum
 from tqdm import tqdm
 
-from src.config import load_config
+from src.config import get_res_path, load_config
 from src.utils import jsd, jsd_bn, jsd_bounds_from_samples, sample_from_cn, vertices_cn
 
 
@@ -107,9 +107,7 @@ if __name__ == "__main__":
         int(x) for x in np.arange(sizes_dict["min"], sizes_dict["max"], sizes_dict["step"])
     ]
     n_reps = config["n_repetitions"]
-    int_str = "Int" if config["prior_args"]["intersection"] else "NoInt"
-    res_str = config["res_path"] + "_" + str(config["prob_shift"]) + "_" + int_str
-    res_path = Path(res_str) 
+    res_path = Path(get_res_path(config))
 
     n_workers = min(n_reps, os.cpu_count())
 

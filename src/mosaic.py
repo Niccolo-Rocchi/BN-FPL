@@ -17,6 +17,7 @@ from src.utils import (
     get_min_max_bns,
     get_parent_confs,
     get_tabular_cpt,
+    jsd,
     learn_bn_params,
     mle_bn_from_counts,
     vac_cn,
@@ -189,16 +190,33 @@ class PriorCPT(CN_CPT):
 
         return self.vacuous
 
-    def compute(self, weighting: str = None, intersection: bool = False) -> tuple:
+    def compute(self, weighting: int) -> tuple:
         """
-        Compute a convex combination of prior clients' CPTs,
-        where the weighting method is `weighting`.
+        Compute a convex combination of prior clients' CPTs, using weighting
+        scheme `weighting` (see Table `weight_schemas` in cap6_extract.tex):
+
+          1 = equal contributions, no filtering (#1: w_i propto 1)
+          2 = equal contributions, restricted to candidates whose credal set
+              intersects the target's -- a hard, boolean cutoff (#4:
+              w_i propto I(K^e cap K^i))
+          3 = equal contributions, weighted by proximity to the target's own
+              MLE theta_hat^e via JSD -- a soft cutoff that never assigns
+              zero weight (replaces #5, w_i propto mu(K^e cap K^i), which
+              collapses to 0 on empty intersection and, more importantly,
+              rewards wide/imprecise candidates simply because they overlap
+              more in absolute terms). For each candidate i:
+                  d_i = max_{v in vertices(K^i)} JSD(theta_hat^e, v)
+              attained at a vertex of K^i since JSD(theta_hat^e, .) is convex
+              (Lin 1991). Since JSD is bounded by ln(2), w_i propto ln(2)-d_i
+              is always strictly positive in practice, and correctly favors
+              candidates that are both close to theta_hat^e AND precise
+              (narrow K^i), instead of conflating overlap with imprecision.
 
         Rows (parent configurations) for which no candidate client contributes
         to the prior -- either because there are no candidate clients at all,
-        or because `intersection=True` and none of them intersects `self` --
-        are left vacuous, i.e. the prior is [0, 1] there (Eq. `s_oper`,
-        S(\\emptyset) = \\Delta_s), meaning no update takes place for that row.
+        or because weighting=2 and none of them intersects `self` -- are left
+        vacuous, i.e. the prior is [0, 1] there (Eq. `s_oper`, S(\\emptyset) =
+        \\Delta_s), meaning no update takes place for that row.
         """
 
         self.weighting = weighting
@@ -212,8 +230,11 @@ class PriorCPT(CN_CPT):
             cpts[0, ..., i] = get_tabular_cpt(cpt_min)
             cpts[1, ..., i] = get_tabular_cpt(cpt_max)
 
+        if weighting == 3:
+            target_mle = get_tabular_cpt(self.clients[0].bn_mle.cpt(self.var))
+
         # Weighted average of prior clients' CPTs
-        I = np.ones((self.shape[0], n_candidates))  # weighting factor (post intersection/ssize filtering)
+        I = np.ones((self.shape[0], n_candidates))  # weighting factor (scheme-dependent)
         I_bin = np.ones((self.shape[0], n_candidates))  # 1 = intersects (diagnostic, always computed)
         for row in range(I.shape[0]):
             self_vertices = self.clients[0].cn.cpts[self.var].vertices[row]
@@ -221,10 +242,12 @@ class PriorCPT(CN_CPT):
                 c_vertices = self.clients[c + 1].cn.cpts[self.var].vertices[row]
                 does_intersect = check_intersection(self_vertices, c_vertices)
                 I_bin[row, c] = float(does_intersect)
-                if intersection and not does_intersect:
+
+                if weighting == 2 and not does_intersect:
                     I[row, c] = 0
-                if self.weighting == "ssize":
-                    I[row, c] *= self.clients[c + 1].data.shape[0]
+                elif weighting == 3:
+                    d_i = max(jsd(target_mle[row], v) for v in c_vertices)
+                    I[row, c] = np.log(2) - d_i
 
         # Diagnostic: fraction of candidate clients intersecting `self`, per row
         self.intersection_frac = (
@@ -307,17 +330,11 @@ class PriorCN(CN):
         return True
 
     # Compute a prior CPT
-    def compute_cpt(
-        self,
-        var: str,
-        clients_list: list,
-        weighting: str = None,
-        intersection: bool = False,
-    ) -> np.array:
+    def compute_cpt(self, var: str, clients_list: list, weighting: int) -> np.array:
 
         # Compute the CPT
         self.cpts[var].set_clients(clients_list)
-        result = self.cpts[var].compute(weighting, intersection)
+        result = self.cpts[var].compute(weighting)
 
         # Update the CPT
         self.update_cpt(var, result)
@@ -328,13 +345,11 @@ class PriorCN(CN):
     # configurations in the network) fraction of candidate clients whose credal
     # set intersects the target client's one -- a diagnostic of how much genuine
     # overlap is available across the whole network, regardless of `weighting`.
-    def compute(
-        self, clients_list: list, weighting: str = None, intersection: bool = False
-    ) -> float:
+    def compute(self, clients_list: list, weighting: int) -> float:
 
         fracs = []
         for var in self.names():
-            fracs.append(self.compute_cpt(var, clients_list, weighting, intersection))
+            fracs.append(self.compute_cpt(var, clients_list, weighting))
         fracs = np.concatenate(fracs)
         fracs = fracs[~np.isnan(fracs)]
 

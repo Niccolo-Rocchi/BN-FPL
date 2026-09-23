@@ -18,7 +18,8 @@ BASE_CONFIG = {
     "ess": 2,
     "alpha": 20,
     "prob_shift": 1.0,
-    "prior_args": {"weighting": "unif", "intersection": True},
+    "weighting": 2,
+    "res_path": "results",
     "bn_base_path": "cancer.bif",
 }
 
