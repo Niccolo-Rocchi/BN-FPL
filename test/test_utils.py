@@ -3,11 +3,13 @@ Tests for src/utils.py.
 
 Covers both the functions exercised by the current `exp.py` local
 learning & update pipeline (vertices_cset, check_intersection, get_bn_counts,
-perturb_bn_params, get_cpt_index/shape/tabular, get_min_max_bns) and the
-broader utility library (mle_*, mne_*, ran_*, centroid_*, maxent_*,
-resample_bn_params) that isn't currently wired into exp.py/JSD.py but is
-kept for other uses (notebooks, future work).
+perturb_bn_params, get_cpt_index/shape/tabular, get_min_max_bns,
+jsd_credal_stats) and the broader utility library (mle_*, mne_*, ran_*,
+centroid_*, maxent_*, resample_bn_params) that isn't currently wired into
+exp.py but is kept for other uses (notebooks, future work).
 """
+
+import pickle
 
 import cvxpy as cp
 import numpy as np
@@ -35,10 +37,12 @@ from src.utils import (
     mle_cset,
     mne_cn,
     mne_cset,
+    lookup_cpt_row,
     perturb_bn_params,
     ran_cn,
     ran_cset,
     resample_bn_params,
+    snapshot_cpts,
     vac_cn,
     vertices_cset,
 )
@@ -731,3 +735,172 @@ def test_jsd_is_bounded_in_0_1():
     p, q = np.array([1.0, 0.0]), np.array([0.0, 1.0])
     d = jsd(p, q)
     assert 0.0 <= d <= 1.0 + 1e-9
+
+
+# --------------------------------------------------------------------------
+# snapshot_cpts: plain-numpy archival of a BN's CPTs (exp.py's models.pkl).
+# --------------------------------------------------------------------------
+
+
+def test_snapshot_cpts_matches_get_tabular_cpt(bn_with_parent):
+    bn = bn_with_parent
+    snap = snapshot_cpts(bn)
+
+    assert set(snap.keys()) == set(bn.names())
+    for var, entry in snap.items():
+        assert set(entry.keys()) == {"cpt", "parents", "labels"}
+        assert np.array_equal(entry["cpt"], get_tabular_cpt(bn.cpt(var)))
+        assert np.allclose(entry["cpt"].sum(axis=1), 1.0)
+        assert len(entry["parents"]) == entry["cpt"].shape[0]
+        assert entry["labels"] == list(bn.variable(var).labels())
+        assert len(entry["labels"]) == entry["cpt"].shape[1]
+
+
+def test_snapshot_cpts_is_independent_copy(bn_with_parent):
+    bn = bn_with_parent
+    snap = snapshot_cpts(bn)
+    var = next(iter(snap))
+    snap[var]["cpt"][0, 0] = -999.0  # mutate the snapshot
+
+    # The source BN's own CPT must be unaffected.
+    assert get_tabular_cpt(bn.cpt(var))[0, 0] != -999.0
+
+
+def test_snapshot_cpts_row_column_labels_match_ground_truth_nonalpha(bn_nonalpha):
+    # Regression test on the real cancer.bif network (non-alphabetical
+    # labels for every variable): the saved "parents"/"labels" metadata must
+    # let a reader reconstruct P(X=x|pi_X) correctly, WITHOUT needing to
+    # separately call get_parent_confs (or, worse, cpt.topandas(), which
+    # would silently scramble both rows and columns here -- see the
+    # topandas-vs-raw-array investigation).
+    bn = bn_nonalpha
+    snap = snapshot_cpts(bn)
+
+    ground_truth = {
+        ("low", "True"): {"True": 0.03, "False": 0.97},
+        ("high", "True"): {"True": 0.05, "False": 0.95},
+        ("low", "False"): {"True": 0.001, "False": 0.999},
+        ("high", "False"): {"True": 0.02, "False": 0.98},
+    }
+    entry = snap["C"]
+    for row, parents in enumerate(entry["parents"]):
+        key = (parents["P"], parents["S"])
+        for col, label in enumerate(entry["labels"]):
+            assert np.isclose(entry["cpt"][row, col], ground_truth[key][label], atol=1e-4), (
+                row,
+                col,
+                parents,
+                label,
+            )
+
+
+# --------------------------------------------------------------------------
+# lookup_cpt_row: the reference way to read a value back out of a
+# snapshot_cpts() entry -- this is the actual "upload"/reload path future
+# code (and the Plot_JS.ipynb demo cell) is expected to use, so it gets its
+# own tests, on a fixed network, on genuinely random networks (random
+# structure, not just a fixed one), and on the real Cancer network with
+# hand-verified ground truth.
+# --------------------------------------------------------------------------
+
+
+def test_lookup_cpt_row_root_variable(bn_with_parent):
+    bn = bn_with_parent
+    snap = snapshot_cpts(bn)
+    got = lookup_cpt_row(snap["A"], parents=None)
+    assert np.allclose(got, get_tabular_cpt(bn.cpt("A"))[0])
+
+
+def test_lookup_cpt_row_with_parents_matches_live_bn(bn_with_parent):
+    bn = bn_with_parent
+    snap = snapshot_cpts(bn)
+    for parents in get_parent_confs(bn, "B"):
+        got = lookup_cpt_row(snap["B"], parents)
+        idx = get_cpt_index(bn, "B", parents)
+        expected = get_tabular_cpt(bn.cpt("B"))[idx]
+        assert np.allclose(got, expected), parents
+
+
+def test_lookup_cpt_row_unknown_parents_raises(bn_with_parent):
+    bn = bn_with_parent
+    snap = snapshot_cpts(bn)
+    with pytest.raises(ValueError):
+        lookup_cpt_row(snap["B"], {"A": "not_a_real_label"})
+
+
+def test_lookup_cpt_row_on_random_networks():
+    # "Reti randomiche": genuinely random STRUCTURE (not just fixed
+    # structure with default values), across several independent draws, so
+    # correctness isn't accidentally specific to one topology.
+    for trial in range(10):
+        bn_gen = gum.BNGenerator()
+        bn = bn_gen.generate(n_nodes=6, n_arcs=8, n_modmax=4)
+        snap = snapshot_cpts(bn)
+        for var in bn.names():
+            for parents in get_parent_confs(bn, var):
+                got = lookup_cpt_row(snap[var], parents)
+                idx = get_cpt_index(bn, var, parents)
+                expected = get_tabular_cpt(bn.cpt(var))[idx]
+                assert np.allclose(got, expected), (trial, var, parents)
+
+
+def test_lookup_cpt_row_matches_ground_truth_on_cancer_network(bn_nonalpha):
+    # The critical case: real cancer.bif, non-alphabetical labels for every
+    # variable -- exactly where a topandas()-based reader would silently
+    # scramble rows/columns.
+    bn = bn_nonalpha
+    snap = snapshot_cpts(bn)
+
+    ground_truth = {
+        ("low", "True"): [0.03, 0.97],
+        ("high", "True"): [0.05, 0.95],
+        ("low", "False"): [0.001, 0.999],
+        ("high", "False"): [0.02, 0.98],
+    }
+    for (p, s), expected in ground_truth.items():
+        got = lookup_cpt_row(snap["C"], {"P": p, "S": s})
+        assert np.allclose(got, expected, atol=1e-4), (p, s)
+
+    # Root variables too.
+    assert np.allclose(lookup_cpt_row(snap["P"]), [0.9, 0.1])
+    assert np.allclose(lookup_cpt_row(snap["S"]), [0.3, 0.7])
+
+
+# --------------------------------------------------------------------------
+# Full round trip: snapshot -> pickle.dumps -> pickle.loads -> lookup_cpt_row
+# (the exact path exp.py's models.pkl / a future "upload" consumer go
+# through), cross-checked against directly querying the SAME live BN --
+# both on the real Cancer network (with a genuine, non-trivial parameter
+# perturbation, not hand-typed "nice" numbers) and on random networks.
+# --------------------------------------------------------------------------
+
+
+def test_snapshot_pickle_roundtrip_matches_live_model_on_cancer_network():
+    bn = gum.loadBN("cancer.bif")
+    perturbed, _ = perturb_bn_params(bn, alpha=10, prob=1.0)
+
+    snap = snapshot_cpts(perturbed)
+    reloaded = pickle.loads(pickle.dumps(snap))  # the actual serialization step
+
+    for var in perturbed.names():
+        for parents in get_parent_confs(perturbed, var):
+            got = lookup_cpt_row(reloaded[var], parents)
+            idx = get_cpt_index(perturbed, var, parents)
+            expected = get_tabular_cpt(perturbed.cpt(var))[idx]
+            assert np.allclose(got, expected), (var, parents)
+
+
+def test_snapshot_pickle_roundtrip_matches_live_model_on_random_networks():
+    for trial in range(5):
+        bn_gen = gum.BNGenerator()
+        bn = bn_gen.generate(n_nodes=7, n_arcs=10, n_modmax=3)
+
+        snap = snapshot_cpts(bn)
+        reloaded = pickle.loads(pickle.dumps(snap))
+
+        for var in bn.names():
+            for parents in get_parent_confs(bn, var):
+                got = lookup_cpt_row(reloaded[var], parents)
+                idx = get_cpt_index(bn, var, parents)
+                expected = get_tabular_cpt(bn.cpt(var))[idx]
+                assert np.allclose(got, expected), (trial, var, parents)

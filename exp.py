@@ -1,21 +1,34 @@
 import gc
+import itertools
 import multiprocessing as mp
+import pickle
 import sys
 from pathlib import Path
 import traceback
 
 import numpy as np
+import pandas as pd
 import pyagrum as gum
 
-from src.utils import get_confs, get_kl, get_kl_cset, jsd, jsd_bn, perturb_bn_params
+from src.utils import jsd_bn, jsd_credal_stats, perturb_bn_params, snapshot_cpts
 
 sys.path.insert(0, str(Path().resolve().parents[1]))
-from src.config import create_clean_dir, get_res_path, load_config, set_seed
+from src.config import create_clean_dir, load_config, set_seed
 from src.mosaic import Client
 
 # Set number of threads for parallel computation
 import os
 n_jobs = max(1, len(os.sched_getaffinity(0)) - 1)
+
+# All implemented weighting schemas (see PriorCPT.compute) are evaluated in
+# every run, so their JSD curves can be compared on the same plot -- the MLE
+# and IDM (no update) curves are identical across schemas and computed once.
+WEIGHTING_SCHEMES = (1, 2, 3)
+
+# Hyperparameters swept as a grid (cartesian product): each is a list in
+# conf.yaml, even when it holds a single value. One full (s_sizes x
+# n_repetitions x WEIGHTING_SCHEMES) sweep is run per combination.
+GRID_KEYS = ("n_clients", "ess", "prob_shift", "alpha")
 
 # No pickling
 _client_num = None
@@ -55,46 +68,24 @@ def init_clients(config, verbose=False) -> list:
     return clients
 
 
-def save_results(client, ss_path, rep, median_intersection=None):
-    # Save the client's exact MLE (used as the "mle" reference in JSD.py and
-    # by Plot_KL.ipynb; NOT client.bn, which is learned with a small
-    # smoothing prior -- see mle_bn_from_counts / learn_bn_params).
-    gum.saveBN(client.bn_mle, f"{ss_path}/{rep}-bn.bif")
-
-    # Save the client's CN
-    gum.saveBN(client.cn.bn_min, f"{ss_path}/{rep}-idm_bn_min.bif")
-    gum.saveBN(client.cn.bn_max, f"{ss_path}/{rep}-idm_bn_max.bif")
-
-    # Save the client's prior
-    gum.saveBN(client.prior_cn.bn_min, f"{ss_path}/{rep}-prior_bn_min.bif")
-    gum.saveBN(client.prior_cn.bn_max, f"{ss_path}/{rep}-prior_bn_max.bif")
-
-    # Save mosaic results for client
-    gum.saveBN(client.cn_mosaic.bn_min, f"{ss_path}/{rep}-mos_bn_min.bif")
-    gum.saveBN(client.cn_mosaic.bn_max, f"{ss_path}/{rep}-mos_bn_max.bif")
-
-    # Save the network-wide median fraction of clients intersecting the prior
-    if median_intersection is not None:
-        with open(f"{ss_path}/{rep}-intersection.txt", "w") as f:
-            f.write(str(median_intersection))
-
-
-def exp(n, ss_path, rep):
-    # print("## Repetition: ", rep, flush=True)
-
+def exp(n, rep) -> tuple:
     # Each (n, rep) task needs its own independent random stream. The worker
     # pool uses "fork", so sibling worker processes inherit an IDENTICAL RNG
     # state at fork time; without reseeding here, several "repetitions"
     # processed by distinct, freshly-forked workers would silently generate
     # IDENTICAL data (confirmed empirically: client 0's data was byte-for-
     # byte identical across repetitions for several sample sizes). The seed
-    # is still fully reproducible given (n, rep).
+    # is still fully reproducible given (n, rep) -- and, transitively, given
+    # the grid combination, since a fresh worker pool/task_seed applies per
+    # combination too (see main()).
     task_seed = hash((n, rep)) % (2**32)
     np.random.seed(task_seed)
     gum.initRandom(task_seed)
 
     config = _config
     client_num = _client_num
+    n_bns = config["n_bns"]
+    bn_base = gum.loadBN(config["bn_base_path"])
 
     # Generate a fresh data-generating process for this repetition (i.e. new
     # client perturbations too, not just new sampled data from a DGP fixed
@@ -114,19 +105,64 @@ def exp(n, ss_path, rep):
     # followed by all other clients, used as prior candidates.
     prior_clients = [client_exp] + [c for e, c in clients.items() if e != client_num]
 
-    # (Re-)compute the prior for the client
-    client_exp.reset_prior()
-    assert client_exp.prior_cn.is_vacuous_all()
-    median_intersection = client_exp.prior_cn.compute(
-        prior_clients, weighting=config["weighting"]
+    task_id = tuple(config[k] for k in GRID_KEYS) + (n, rep)
+    row = {k: config[k] for k in GRID_KEYS}
+    row["size"] = n
+    row["rep"] = rep
+
+    # Archived models for this task (see snapshot_cpts): the client's exact
+    # MLE, its local IDM credal set (no update), and -- per weighting schema
+    # -- the prior and the resulting MOSAIC-updated credal set. Needed later
+    # for the global optimization phase (cap6_extract.tex), which reads
+    # theta^i in K^{i+}_{X|pi_X} directly from the updated credal sets.
+    models = {}
+
+    # MLE and IDM (no update): identical across weighting schemas, computed once.
+    row["mle"] = jsd_bn(bn_base, client_exp.bn_mle, target="joint")
+    models["bn_mle"] = snapshot_cpts(client_exp.bn_mle)
+
+    idm_stats = jsd_credal_stats(
+        bn_base, client_exp.cn.bn_min, client_exp.cn.bn_max, n_bns
     )
-    assert not client_exp.prior_cn.is_vacuous_any()
+    row["idm_min"], row["idm_mean"], row["idm_max"] = (
+        idm_stats["min"],
+        idm_stats["mean"],
+        idm_stats["max"],
+    )
+    models["idm_min"] = snapshot_cpts(client_exp.cn.bn_min)
+    models["idm_max"] = snapshot_cpts(client_exp.cn.bn_max)
 
-    # Run mosaic
-    client_exp.mosaic_cn()
+    # MOSAIC, once per weighting schema. The network-wide median fraction of
+    # clients intersecting the prior only depends on the target/candidates'
+    # own credal sets (not on the weighting formula), so it's identical
+    # across schemas -- kept from weighting=2, where it's most directly
+    # interpretable (hard intersection cutoff).
+    intersection_frac = None
+    for w in WEIGHTING_SCHEMES:
+        client_exp.reset_prior()
+        assert client_exp.prior_cn.is_vacuous_all()
+        median_intersection = client_exp.prior_cn.compute(prior_clients, weighting=w)
+        assert not client_exp.prior_cn.is_vacuous_any()
+        if w == 2:
+            intersection_frac = median_intersection
 
-    # Save results
-    save_results(client_exp, ss_path, rep, median_intersection)
+        models[f"prior_w{w}_min"] = snapshot_cpts(client_exp.prior_cn.bn_min)
+        models[f"prior_w{w}_max"] = snapshot_cpts(client_exp.prior_cn.bn_max)
+
+        client_exp.mosaic_cn()
+
+        mos_stats = jsd_credal_stats(
+            bn_base, client_exp.cn_mosaic.bn_min, client_exp.cn_mosaic.bn_max, n_bns
+        )
+        row[f"mos_w{w}_min"] = mos_stats["min"]
+        row[f"mos_w{w}_mean"] = mos_stats["mean"]
+        row[f"mos_w{w}_max"] = mos_stats["max"]
+        models[f"mos_w{w}_min"] = snapshot_cpts(client_exp.cn_mosaic.bn_min)
+        models[f"mos_w{w}_max"] = snapshot_cpts(client_exp.cn_mosaic.bn_max)
+
+    row["intersection_frac"] = intersection_frac
+
+    return row, models, task_id
 
 
 def _exp_star(args):
@@ -135,7 +171,7 @@ def _exp_star(args):
     except Exception:
         tb = traceback.format_exc()
         print("ERROR", args, tb, flush=True)
-        return
+        return None, None, None
 
 
 def main():
@@ -146,32 +182,55 @@ def main():
     # Choose configurationc file
     config = load_config("conf.yaml")
 
-    # Create empty folders
-    res_path = Path(get_res_path(config))
+    # Create the (single) empty results folder for the whole grid
+    res_path = Path(config["res_path"])
     create_clean_dir(res_path)
 
-    # Choose client
     client_num = config["client_num"]
 
-    # For each sample size ...
     sizes_dict = config["s_sizes"]
     sizes = [
         int(x)
         for x in np.arange(sizes_dict["min"], sizes_dict["max"], sizes_dict["step"])
     ]
-    ctx = mp.get_context("fork")
-    with ctx.Pool(
-        processes=n_jobs,
-        initializer=_init_worker,
-        initargs=(client_num, config),
-    ) as pool:
-        for n in sizes:
-            print("# Sample size: ", n, flush=True)
-            ss_path = res_path / f"ss{n}"
-            create_clean_dir(ss_path)
 
-            tasks = [(n, ss_path, rep) for rep in range(config["n_repetitions"])]
-            pool.map(_exp_star, tasks)
+    grid_values = [config[k] for k in GRID_KEYS]
+
+    rows = []
+    models_by_task = {}
+    ctx = mp.get_context("fork")
+
+    # One full sweep (all sizes x repetitions x weighting schemas) per
+    # hyperparameter combination. A single flattened pool across all
+    # combinations would keep workers slightly busier between combinations,
+    # but recreating the pool per combination is simpler and, since each
+    # combination's own sweep already saturates all workers, the difference
+    # is marginal.
+    for combo in itertools.product(*grid_values):
+        combo_config = dict(config, **dict(zip(GRID_KEYS, combo)))
+        print("# Hyperparameters: ", dict(zip(GRID_KEYS, combo)), flush=True)
+
+        with ctx.Pool(
+            processes=n_jobs,
+            initializer=_init_worker,
+            initargs=(client_num, combo_config),
+        ) as pool:
+            for n in sizes:
+                print("# Sample size: ", n, flush=True)
+
+                tasks = [(n, rep) for rep in range(combo_config["n_repetitions"])]
+                for row, models, task_id in pool.map(_exp_star, tasks):
+                    if row is None:
+                        continue
+                    rows.append(row)
+                    models_by_task[task_id] = models
+
+    df_tot = pd.DataFrame(rows)
+    df_tot.to_csv(res_path / "df_tot.csv", index=False)
+
+    # task_id keys are (n_clients, ess, prob_shift, alpha, size, rep).
+    with open(res_path / "models.pkl", "wb") as f:
+        pickle.dump(models_by_task, f)
 
     gc.collect()
 

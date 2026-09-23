@@ -1,19 +1,21 @@
 ## Configuration file (#TODO: tidy up)
 
-n_clients: 10   # 10 and 20
+# Grid hyperparameters: each is a list, swept as a cartesian product (one
+# full sweep over s_sizes x n_repetitions x weighting schemas per
+# combination). A single value still needs list syntax, e.g. `ess: [2]`.
+n_clients: [5, 10]      # Number of clients
+ess: [2, 5]             # Equivalent sample size for local IDM
+prob_shift: [0.5, 0.6]  # Probability of shift in parameters between clients. 0: iid data. >0: non-iid data
+alpha: [10, 20]         # Dirichlet concentration for parameter perturbation (higher = smaller shift)
+
 client_num: 0
-s_sizes: 
+s_sizes:
   min: 5
   max: 110
-  step: 25
-ess: 2          # 2 and 5
-alpha: 20       # Dirichlet concentration for parameter perturbation (higher = smaller shift)
-prob_shift: 0.5 # Probability of shift in parameters between clients. 0: iid data.
-# weighting: 1 = equal contributions, no filtering
-#            2 = equal contributions, hard intersection cutoff
-#            3 = equal contributions, soft cutoff via JSD-proximity to the target's MLE
-weighting: 3
+  step: 50
+# All 3 weighting schemas (see exp.py's WEIGHTING_SCHEMES / PriorCPT.compute)
+# are computed in every run, so there is no `weighting` hyperparameter here.
 res_path: results
 bn_base_path: ./cancer.bif
-n_repetitions: 20
-n_bns: 30
+n_repetitions: 2
+n_bns: 2

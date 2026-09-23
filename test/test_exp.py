@@ -2,14 +2,43 @@
 Tests for exp.py: the end-to-end local learning & update pipeline (one
 sample size, a handful of repetitions, no multiprocessing -- `exp()` is
 called directly with `_init_worker`'s globals set up by hand).
+
+exp() computes the JSD statistics in-memory (merged from the old JSD.py) and
+returns (row, models, task_id): `row` is the JSD summary dict (destined for
+df_tot.csv), `models` is a dict of raw CPT snapshots (destined for the
+grid-wide models.pkl, kept for the future global optimization phase), and
+`task_id` is the (n_clients, ess, prob_shift, alpha, size, rep) key used to
+index it there.
 """
+
+import copy
 
 import numpy as np
 import pyagrum as gum
 import pytest
 
 import exp as exp_mod
-from src.config import create_clean_dir, set_seed
+from src.config import set_seed
+
+EXPECTED_ROW_KEYS = (
+    set(exp_mod.GRID_KEYS)
+    | {"size", "rep", "mle", "idm_min", "idm_mean", "idm_max", "intersection_frac"}
+    | {
+        f"mos_w{w}_{stat}"
+        for w in exp_mod.WEIGHTING_SCHEMES
+        for stat in ("min", "mean", "max")
+    }
+)
+
+EXPECTED_MODEL_KEYS = (
+    {"bn_mle", "idm_min", "idm_max"}
+    | {
+        f"{kind}_w{w}_{bound}"
+        for kind in ("prior", "mos")
+        for w in exp_mod.WEIGHTING_SCHEMES
+        for bound in ("min", "max")
+    }
+)
 
 
 BASE_CONFIG = {
@@ -18,9 +47,9 @@ BASE_CONFIG = {
     "ess": 2,
     "alpha": 20,
     "prob_shift": 1.0,
-    "weighting": 2,
     "res_path": "results",
     "bn_base_path": "cancer.bif",
+    "n_bns": 10,
 }
 
 
@@ -34,126 +63,101 @@ def clients_template():
     return exp_mod.init_clients(BASE_CONFIG)
 
 
-def test_exp_runs_end_to_end_for_client_zero(tmp_path):
+def test_exp_returns_expected_schema_and_sane_values():
     exp_mod._init_worker(0, BASE_CONFIG)
-    ss_path = tmp_path / "ss50"
-    create_clean_dir(ss_path)
+    row, models, task_id = exp_mod.exp(50, rep=0)
 
-    exp_mod.exp(50, ss_path, rep=0)
+    assert set(row.keys()) == EXPECTED_ROW_KEYS
+    assert row["size"] == 50 and row["rep"] == 0
+    for k in exp_mod.GRID_KEYS:
+        assert row[k] == BASE_CONFIG[k]
 
-    for suffix in [
-        "bn.bif",
-        "idm_bn_min.bif",
-        "idm_bn_max.bif",
-        "prior_bn_min.bif",
-        "prior_bn_max.bif",
-        "mos_bn_min.bif",
-        "mos_bn_max.bif",
-        "intersection.txt",
-    ]:
-        assert (ss_path / f"0-{suffix}").exists(), suffix
+    assert row["idm_min"] <= row["idm_mean"] + 1e-9 <= row["idm_max"] + 1e-9
+    for w in exp_mod.WEIGHTING_SCHEMES:
+        assert row[f"mos_w{w}_min"] <= row[f"mos_w{w}_mean"] + 1e-9
+        assert row[f"mos_w{w}_mean"] <= row[f"mos_w{w}_max"] + 1e-9
 
-    with open(ss_path / "0-intersection.txt") as f:
-        median = float(f.read())
-    assert 0.0 <= median <= 1.0
+    assert 0.0 <= row["intersection_frac"] <= 1.0
+    assert row["mle"] >= 0.0
+
+    assert task_id == (5, 2, 1.0, 20, 50, 0)  # GRID_KEYS order + (size, rep)
+
+
+def test_exp_models_snapshot_is_well_formed():
+    # Each variable's snapshot is self-describing: {"cpt", "parents",
+    # "labels"} (see snapshot_cpts) -- not a bare array -- specifically so a
+    # future reader never has to separately reconstruct a gum.BayesNet (and
+    # risk using cpt.topandas()'s row order by mistake) to know what each
+    # row/column means.
+    exp_mod._init_worker(0, BASE_CONFIG)
+    row, models, task_id = exp_mod.exp(50, rep=0)
+
+    assert set(models.keys()) == EXPECTED_MODEL_KEYS
+    bn_base = gum.loadBN(BASE_CONFIG["bn_base_path"])
+    for key, cpts in models.items():
+        assert set(cpts.keys()) == set(bn_base.names()), key
+        for var, entry in cpts.items():
+            assert set(entry.keys()) == {"cpt", "parents", "labels"}, (key, var)
+            assert entry["cpt"].ndim == 2, (key, var)
+            assert len(entry["parents"]) == entry["cpt"].shape[0], (key, var)
+            assert entry["labels"] == list(bn_base.variable(var).labels()), (key, var)
+
+    # every "min" snapshot must be componentwise <= its "max" counterpart
+    for w in exp_mod.WEIGHTING_SCHEMES:
+        for var in bn_base.names():
+            assert np.all(
+                models[f"mos_w{w}_min"][var]["cpt"]
+                <= models[f"mos_w{w}_max"][var]["cpt"] + 1e-9
+            )
+    # bn_mle's rows must be valid probability distributions.
+    for var, entry in models["bn_mle"].items():
+        assert np.allclose(entry["cpt"].sum(axis=1), 1.0)
 
 
 @pytest.mark.parametrize("client_num", [0, 2, 4])
-def test_exp_works_for_any_client_num(tmp_path, client_num):
+def test_exp_works_for_any_client_num(client_num):
     config = dict(BASE_CONFIG, client_num=client_num)
     exp_mod._init_worker(client_num, config)
-    ss_path = tmp_path / f"ss50_client{client_num}"
-    create_clean_dir(ss_path)
 
     # Must not raise, regardless of which client is the update target.
-    exp_mod.exp(50, ss_path, rep=0)
-    assert (ss_path / "0-mos_bn_min.bif").exists()
+    row, models, task_id = exp_mod.exp(50, rep=0)
+    assert set(row.keys()) == EXPECTED_ROW_KEYS
+    assert set(models.keys()) == EXPECTED_MODEL_KEYS
 
 
-def test_different_reps_produce_different_data(tmp_path):
+def test_different_reps_produce_different_data():
     # Regression test: exp() must reseed per (n, rep) task and regenerate the
     # whole DGP (client perturbations included, not just the sampled data)
     # for each repetition. Before the fix, forked worker processes inherited
     # an identical RNG state, so distinct repetitions processed by different
     # (freshly-forked) workers silently produced byte-for-byte identical
-    # client-0 data.
+    # client-0 data -- visible here as an identical "mle" JSD value.
     exp_mod._init_worker(0, BASE_CONFIG)
 
-    results = []
-    for rep in [0, 1]:
-        ss_path = tmp_path / f"ss40_rep{rep}"
-        create_clean_dir(ss_path)
-        exp_mod.exp(40, ss_path, rep=rep)
-        results.append(gum.loadBN(str(ss_path / f"{rep}-bn.bif")))
+    row0, _, _ = exp_mod.exp(40, rep=0)
+    row1, _, _ = exp_mod.exp(40, rep=1)
 
-    any_differs = any(
-        not np.allclose(
-            results[0].cpt(var)[:].flatten(), results[1].cpt(var)[:].flatten()
-        )
-        for var in results[0].names()
-    )
-    assert any_differs, "rep=0 and rep=1 produced identical client-0 data"
+    assert row0["mle"] != row1["mle"]
 
 
-def test_same_task_is_reproducible(tmp_path):
+def test_same_task_is_reproducible():
     # The reseeding fix must not break reproducibility: the SAME (n, rep)
     # run twice must give identical results.
     exp_mod._init_worker(0, BASE_CONFIG)
 
-    saved = []
-    for i in range(2):
-        ss_path = tmp_path / f"ss40_run{i}"
-        create_clean_dir(ss_path)
-        exp_mod.exp(40, ss_path, rep=0)
-        saved.append(gum.loadBN(str(ss_path / "0-bn.bif")))
+    row_a, _, task_id_a = exp_mod.exp(40, rep=0)
+    row_b, _, task_id_b = exp_mod.exp(40, rep=0)
 
-    for var in saved[0].names():
-        assert np.allclose(
-            saved[0].cpt(var)[:].flatten(), saved[1].cpt(var)[:].flatten()
-        )
-
-
-def test_saved_bn_bif_is_the_exact_mle_not_smoothed(tmp_path, clients_template):
-    # save_results must save client.bn_mle (exact) under "-bn.bif", not
-    # client.bn (smoothed via learn_bn_params) -- this is what JSD.py's
-    # "mle" reference curve and Plot_KL.ipynb both read back.
-    client = clients_template[0]
-    client.generate_base_info(30, BASE_CONFIG["ess"])
-
-    # Force client.bn (smoothed) and client.bn_mle (exact) to visibly
-    # differ, regardless of what generate_base_info's random data happened
-    # to produce, by overwriting client.bn with an obviously-smoothed stand
-    # -in and keeping bn_mle untouched.
-    smoothed_stub = gum.BayesNet(client.bn_mle)
-    for var in smoothed_stub.names():
-        var_size = smoothed_stub.variable(var).domainSize()
-        n_rows = smoothed_stub.cpt(var).domainSize() // var_size
-        smoothed_stub.cpt(var).fillWith([1.0 / var_size] * var_size * n_rows)
-    client.bn = smoothed_stub
-
-    ss_path = tmp_path / "ss30_mle_check"
-    create_clean_dir(ss_path)
-    exp_mod.save_results(client, ss_path, rep=0)
-
-    saved_bn = gum.loadBN(str(ss_path / "0-bn.bif"))
-    for var in saved_bn.names():
-        assert np.allclose(
-            saved_bn.cpt(var)[:].flatten(), client.bn_mle.cpt(var)[:].flatten()
-        )
-    any_differs = any(
-        not np.allclose(
-            saved_bn.cpt(var)[:].flatten(), client.bn.cpt(var)[:].flatten()
-        )
-        for var in saved_bn.names()
-    )
-    assert any_differs
+    assert task_id_a == task_id_b
+    for key in EXPECTED_ROW_KEYS:
+        # atol handles residual float non-associativity (e.g. multi-threaded
+        # BLAS summation order) between two otherwise identical runs.
+        assert np.isclose(row_a[key], row_b[key], atol=1e-9), key
 
 
 def test_prior_clients_excludes_target_regardless_of_client_num(clients_template):
     # Direct regression test for the client_num generalization: prior_clients
     # must always start with the target client and never include it again.
-    import copy
-
     clients = copy.deepcopy(clients_template)
     for client_num in [0, 1, 3]:
         client_exp = clients[client_num]
@@ -188,12 +192,3 @@ def test_init_clients_other_clients_perturbed_with_prob_shift_1(clients_template
         client = clients_template[e]
         for var in client.mask.names():
             assert np.all(client.mask.cpt(var)[:] == 0)
-
-
-def test_save_results_writes_intersection_file(tmp_path):
-    exp_mod._init_worker(0, BASE_CONFIG)
-    ss_path = tmp_path / "ss80"
-    create_clean_dir(ss_path)
-    exp_mod.exp(80, ss_path, rep=1)
-
-    assert (ss_path / "1-intersection.txt").exists()

@@ -59,10 +59,3 @@ def load_config(name: str):
         config = yaml.safe_load(file)
 
     return config
-
-
-# Results directory name for a given config, e.g. "results_0.5_w3". Shared by
-# exp.py (which creates it) and JSD.py (which must read from the same one) --
-# a single source of truth to avoid the two silently drifting apart.
-def get_res_path(config) -> str:
-    return f'{config["res_path"]}_{config["prob_shift"]}_w{config["weighting"]}'

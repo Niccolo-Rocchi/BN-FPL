@@ -202,6 +202,77 @@ def jsd_bounds_from_samples(B, sampled_bns, target="marginals"):
     }
 
 
+# JSD(bn_base, .) statistics (min, mean, max) over a credal net's strong
+# extension (bn_min, bn_max). `max` is exact (attained at a vertex, since
+# JSD is convex in its second argument -- see cap6_extract.tex's Evaluation
+# section); `min` and `mean` are approximated by sampling `n_bns` BNs from
+# the credal set's interior. Used for both the IDM (no update) and MOSAIC
+# (post-update) curves, for every weighting scheme.
+def jsd_credal_stats(bn_base, bn_min, bn_max, n_bns, target="joint") -> dict:
+
+    vertices_bns = vertices_cn(bn_min, bn_max, n_bns=None)
+    vertex_results = jsd_bounds_from_samples(bn_base, vertices_bns, target=target)
+
+    sampled_bns = sample_from_cn(bn_min, bn_max, n_bns=n_bns)
+    sample_results = jsd_bounds_from_samples(bn_base, sampled_bns, target=target)
+
+    return {
+        "min": sample_results["min"],
+        "mean": sample_results["mean"],
+        "max": vertex_results["max"],
+    }
+
+
+# Self-contained, plain-numpy snapshot of every CPT in `bn`, keyed by
+# variable name -- for archiving a model (e.g. exp.py's per-task pickle)
+# independently of pyagrum, so it can be reloaded later (e.g. for the global
+# optimization phase in cap6_extract.tex) without needing pyagrum objects.
+#
+# Each variable's entry is {"cpt": array, "parents": [...], "labels": [...]}:
+# "cpt"'s row i corresponds to "parents"[i] (a {parent_name: label} dict, or
+# None for a root variable) and its column j to "labels"[j] -- i.e. the row/
+# column meaning travels WITH the array. This is deliberate: cpt.topandas()
+# sorts rows/columns alphabetically by label while the raw array (get_
+# tabular_cpt, used here) follows pyagrum's native declaration order (see
+# get_parent_confs); the two silently disagree for any variable without
+# alphabetically-ordered labels (e.g. every variable in cancer.bif). Storing
+# "parents"/"labels" alongside "cpt" means a future reader never has to
+# separately reconstruct a gum.BayesNet and remember which of the two
+# orderings to use -- verified against get_parent_confs on the real network.
+def snapshot_cpts(bn: gum.BayesNet) -> dict:
+    return {
+        var: {
+            "cpt": get_tabular_cpt(bn.cpt(var)).copy(),
+            "parents": get_parent_confs(bn, var),
+            "labels": list(bn.variable(var).labels()),
+        }
+        for var in bn.names()
+    }
+
+
+# The reference way to read a value back out of a snapshot_cpts() entry
+# ({"cpt", "parents", "labels"}) for one variable: P(X=. | parents), as a
+# 1D array ordered like `entry["labels"]`. Matches purely against the
+# entry's OWN stored "parents" list -- never against a freshly-loaded
+# gum.BayesNet's topandas()/native order -- so this is safe by construction
+# against the row/column-ordering pitfall snapshot_cpts exists to avoid.
+def lookup_cpt_row(entry: dict, parents: dict = None) -> np.array:
+    if parents is None:
+        if entry["parents"] != [None]:
+            raise ValueError(
+                "parents=None but this variable has parents; a configuration "
+                "must be given."
+            )
+        return entry["cpt"][0]
+
+    parents = {k: str(v) for k, v in parents.items()}
+    for row, conf in enumerate(entry["parents"]):
+        if conf is not None and all(str(conf.get(k)) == v for k, v in parents.items()):
+            return entry["cpt"][row]
+
+    raise ValueError(f"No matching parent configuration for {parents}.")
+
+
 # Get the joint distribution of a BN, ordered by `names`
 def get_joint(bn:gum.BayesNet, names:list):
 
