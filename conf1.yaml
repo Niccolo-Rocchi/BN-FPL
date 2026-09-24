@@ -4,22 +4,22 @@
 # Grid hyperparameters: each is a list, swept as a cartesian product (one
 # full sweep over s_sizes x n_repetitions x weighting schemas per
 # combination). A single value still needs list syntax, e.g. `ess: [2]`.
-n_clients: [5, 10]      # Number of clients
-ess: [2, 5]             # Equivalent sample size for local IDM
+n_clients: [10]      # Number of clients
+ess: [2, 10]             # Equivalent sample size for local IDM
 prob_shift: [0.0, 0.5]  # Probability of shift in parameters between clients. 0: iid data. >0: non-iid data
-alpha: [10, 20]         # Dirichlet concentration for parameter perturbation (higher = smaller shift)
+alpha: [0.1, 10]         # Dirichlet concentration for parameter perturbation (higher = smaller shift)
 
 client_num: 0
 s_sizes:
   min: 5
-  max: 110
-  step: 50
+  max: 510
+  step: 5
 # All 3 weighting schemas (see exp1.py's WEIGHTING_SCHEMES / PriorCPT.compute)
 # are computed in every run, so there is no `weighting` hyperparameter here.
 res_path: results1
 bn_base_path: ./cancer.bif
-n_repetitions: 2
-n_bns: 2
+n_repetitions: 50
+n_bns: 100
 # Archive every task's CPT snapshots to results/models/<task_id>.pkl (see
 # snapshot_cpts in exp1.py).
 save_models: True
@@ -29,4 +29,4 @@ save_models: True
 # min/mean JSD (~5.5MB/task, confirmed empirically), which otherwise grows
 # unbounded over a long run. Lower = tighter memory bound but more
 # respawn overhead; defaults to 100 if omitted.
-max_tasks_per_child: 100
+max_tasks_per_child: 50
