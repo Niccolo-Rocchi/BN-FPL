@@ -223,13 +223,16 @@ def test_prior_weighting2_excludes_non_overlapping_candidate():
 
 def test_prior_weighting2_no_overlap_falls_back_to_vacuous_row():
     # Regression test for the vacuous-prior bug (used to produce (0,0)).
+    # Whether this case also emits a warning is not checked here -- that's
+    # a pure UX/logging choice (currently silenced in PriorCPT.compute to
+    # avoid spamming stdout during a large grid run), not part of the
+    # behavior this test guards.
     target = _make_client_with_cset(*_seg(0.02, 0.08))
     c1 = _make_client_with_cset(*_seg(0.8, 0.9))
     c2 = _make_client_with_cset(*_seg(0.65, 0.78))
 
     target.reset_prior()
-    with pytest.warns(UserWarning, match="falling back to a vacuous prior"):
-        median = target.prior_cn.compute([target, c1, c2], weighting=2)
+    median = target.prior_cn.compute([target, c1, c2], weighting=2)
 
     prior_min, prior_max = target.prior_cn.cpt("X")
     assert np.allclose(prior_min, [[0.0, 0.0]])
@@ -249,13 +252,13 @@ def test_prior_zero_candidates_is_fully_vacuous():
 
 def test_prior_weighting2_single_candidate_respects_intersection_filter():
     # Regression test: the former len(clients)==2 shortcut bypassed the
-    # intersection filter entirely.
+    # intersection filter entirely. Whether this also emits a warning is
+    # not checked here -- see the comment in the no-overlap test above.
     target = _make_client_with_cset(*_seg(0.02, 0.08))
     c1 = _make_client_with_cset(*_seg(0.8, 0.9))  # does not overlap
 
     target.reset_prior()
-    with pytest.warns(UserWarning):
-        target.prior_cn.compute([target, c1], weighting=2)
+    target.prior_cn.compute([target, c1], weighting=2)
     prior_min, prior_max = target.prior_cn.cpt("X")
     assert np.allclose(prior_min, [[0.0, 0.0]])
     assert np.allclose(prior_max, [[1.0, 1.0]])
@@ -355,7 +358,9 @@ def test_prior_cn_median_over_two_variable_network():
         bn_min, bn_max = gum.BayesNet(bn), gum.BayesNet(bn)
         bn_min.cpt("X").fillWith(x_bounds[0])
         bn_max.cpt("X").fillWith(x_bounds[1])
-        bn_min.cpt("Y").fillWith(y_bounds[0] * 2)  # Y has 1 parent config (X's 2 states)
+        bn_min.cpt("Y").fillWith(
+            y_bounds[0] * 2
+        )  # Y has 1 parent config (X's 2 states)
         bn_max.cpt("Y").fillWith(y_bounds[1] * 2)
         c.cn = _cn_from_bounds(bn_min, bn_max)
         c.data = np.zeros((10, 1))

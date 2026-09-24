@@ -17,35 +17,14 @@ import pyagrum as gum
 import pytest
 
 from src.config import set_seed
-from src.utils import (
-    centroid_cn,
-    centroid_cset,
-    check_consistency,
-    check_intersection,
-    get_bn_counts,
-    get_cpt_index,
-    get_cpt_shape,
-    get_min_max_bns,
-    get_parent_confs,
-    get_tabular_cpt,
-    jsd,
-    learn_bn_params,
-    maxent_cn,
-    maxent_cset,
-    mle_bn_from_counts,
-    mle_cn,
-    mle_cset,
-    mne_cn,
-    mne_cset,
-    lookup_cpt_row,
-    perturb_bn_params,
-    ran_cn,
-    ran_cset,
-    resample_bn_params,
-    snapshot_cpts,
-    vac_cn,
-    vertices_cset,
-)
+from src.utils import (centroid_cn, centroid_cset, check_consistency,
+                       check_intersection, get_bn_counts, get_cpt_index,
+                       get_cpt_shape, get_min_max_bns, get_parent_confs,
+                       get_tabular_cpt, jsd, learn_bn_params, lookup_cpt_row,
+                       maxent_cn, maxent_cset, mle_bn_from_counts, mle_cn,
+                       mle_cset, mne_cn, mne_cset, perturb_bn_params, ran_cn,
+                       ran_cset, resample_bn_params, snapshot_cpts, vac_cn,
+                       vertices_cset)
 
 # BIF-file round trips (used internally by get_min_max_bns / pyagrum's
 # CredalNet, see cap6_extract.tex investigation) truncate to ~6 significant
@@ -356,9 +335,7 @@ def test_get_bn_counts_matches_direct_counting(bn_with_parent):
         got_counts = get_tabular_cpt(bn_counts.cpt(var))
         assert np.allclose(got_counts, direct_counts), var
 
-    assert sum(
-        get_tabular_cpt(bn_counts.cpt(v)).sum() for v in ["A"]
-    ) == len(data)
+    assert sum(get_tabular_cpt(bn_counts.cpt(v)).sum() for v in ["A"]) == len(data)
 
 
 def test_get_bn_counts_total_equals_sample_size(bn_with_parent):
@@ -786,7 +763,9 @@ def test_snapshot_cpts_row_column_labels_match_ground_truth_nonalpha(bn_nonalpha
     for row, parents in enumerate(entry["parents"]):
         key = (parents["P"], parents["S"])
         for col, label in enumerate(entry["labels"]):
-            assert np.isclose(entry["cpt"][row, col], ground_truth[key][label], atol=1e-4), (
+            assert np.isclose(
+                entry["cpt"][row, col], ground_truth[key][label], atol=1e-4
+            ), (
                 row,
                 col,
                 parents,

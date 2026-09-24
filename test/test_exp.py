@@ -32,15 +32,12 @@ EXPECTED_ROW_KEYS = (
     }
 )
 
-EXPECTED_MODEL_KEYS = (
-    {"bn_mle", "idm_min", "idm_max"}
-    | {
-        f"{kind}_w{w}_{bound}"
-        for kind in ("prior", "mos")
-        for w in exp_mod.WEIGHTING_SCHEMES
-        for bound in ("min", "max")
-    }
-)
+EXPECTED_MODEL_KEYS = {"bn_mle", "idm_min", "idm_max"} | {
+    f"{kind}_w{w}_{bound}"
+    for kind in ("prior", "mos")
+    for w in exp_mod.WEIGHTING_SCHEMES
+    for bound in ("min", "max")
+}
 
 
 BASE_CONFIG = {
@@ -315,9 +312,7 @@ def test_prior_clients_excludes_target_regardless_of_client_num(clients_template
         assert len(prior_clients) == len(clients)
         # every other client appears exactly once among the candidates
         other_labels = sorted(c.label for c in prior_clients[1:])
-        expected_labels = sorted(
-            c.label for e, c in clients.items() if e != client_num
-        )
+        expected_labels = sorted(c.label for e, c in clients.items() if e != client_num)
         assert other_labels == expected_labels
 
 

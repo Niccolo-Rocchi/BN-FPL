@@ -2,23 +2,22 @@ import csv
 import gc
 import itertools
 import multiprocessing as mp
+# Set number of threads for parallel computation
+import os
 import pickle
 import time
-from pathlib import Path
 import traceback
+from pathlib import Path
 
 import numpy as np
 import psutil
 import pyagrum as gum
-from tqdm import tqdm
-
-from src.utils import jsd_bn, jsd_credal_stats, perturb_bn_params, snapshot_cpts
 
 from src.config import create_clean_dir, load_config, set_seed
 from src.mosaic import Client
+from src.utils import (jsd_bn, jsd_credal_stats, perturb_bn_params,
+                       snapshot_cpts)
 
-# Set number of threads for parallel computation
-import os
 n_jobs = max(1, len(os.sched_getaffinity(0)) - 1)
 
 # All implemented weighting schemas (see PriorCPT.compute) are evaluated in
@@ -251,7 +250,9 @@ def _check_unique_task_ids(tasks: list) -> None:
         )
 
 
-def _log_memory(proc: psutil.Process, n_done: int, n_total: int, n_failed: int, t_start: float) -> None:
+def _log_memory(
+    proc: psutil.Process, n_done: int, n_total: int, n_failed: int, t_start: float
+) -> None:
     """
     Print current memory usage (parent + all live worker children) and
     throughput. See main()'s docstring-comment for how to read this.
@@ -272,11 +273,12 @@ def _log_memory(proc: psutil.Process, n_done: int, n_total: int, n_failed: int, 
     rate = n_done / elapsed if elapsed > 0 else 0.0
     eta_min = (n_total - n_done) / rate / 60 if rate > 0 else float("nan")
 
-    tqdm.write(
+    print(
         f"[mem] {n_done}/{n_total} done ({n_failed} failed) | "
         f"parent RSS: {parent_rss / 1e9:.2f} GB | "
         f"{n_children} workers RSS (sum): {children_rss / 1e9:.2f} GB | "
-        f"{rate:.2f} tasks/sec | ETA: {eta_min:.1f} min"
+        f"{rate:.2f} tasks/sec | ETA: {eta_min:.1f} min",
+        flush=True,
     )
 
 
@@ -344,9 +346,7 @@ def main():
 
         ctx = mp.get_context("fork")
         with ctx.Pool(processes=n_jobs) as pool:
-            for row, models, task_id in tqdm(
-                pool.imap_unordered(_exp_star, tasks), total=len(tasks)
-            ):
+            for row, models, task_id in pool.imap_unordered(_exp_star, tasks):
                 if row is None:
                     n_failed += 1
                     continue
@@ -354,10 +354,13 @@ def main():
                 # The row must describe exactly the task it was computed
                 # for -- both in WHICH hyperparameters (task_id) and in
                 # HAVING every expected column (no more, no less).
-                row_task_id = tuple(row[k] for k in GRID_KEYS) + (row["size"], row["rep"])
+                row_task_id = tuple(row[k] for k in GRID_KEYS) + (
+                    row["size"],
+                    row["rep"],
+                )
                 assert row_task_id == task_id, (row_task_id, task_id)
-                assert set(row.keys()) == set(ROW_FIELDNAMES), (
-                    set(row.keys()) ^ set(ROW_FIELDNAMES)
+                assert set(row.keys()) == set(ROW_FIELDNAMES), set(row.keys()) ^ set(
+                    ROW_FIELDNAMES
                 )
 
                 writer.writerow(row)

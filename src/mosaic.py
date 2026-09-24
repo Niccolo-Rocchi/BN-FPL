@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-import sys
 import warnings
 
 import numpy as np
@@ -9,20 +8,10 @@ import pyagrum as gum
 from tenacity import retry, stop_after_attempt, wait_fixed
 
 from src.config import safe_assert
-from src.utils import (
-    check_intersection,
-    get_bn_counts,
-    get_cpt_index,
-    get_cpt_shape,
-    get_min_max_bns,
-    get_parent_confs,
-    get_tabular_cpt,
-    jsd,
-    learn_bn_params,
-    mle_bn_from_counts,
-    vac_cn,
-    vertices_cset,
-)
+from src.utils import (check_intersection, get_bn_counts, get_cpt_index,
+                       get_cpt_shape, get_min_max_bns, get_parent_confs,
+                       get_tabular_cpt, jsd, learn_bn_params,
+                       mle_bn_from_counts, vac_cn, vertices_cset)
 
 
 # Custom CN class
@@ -234,8 +223,12 @@ class PriorCPT(CN_CPT):
             target_mle = get_tabular_cpt(self.clients[0].bn_mle.cpt(self.var))
 
         # Weighted average of prior clients' CPTs
-        I = np.ones((self.shape[0], n_candidates))  # weighting factor (scheme-dependent)
-        I_bin = np.ones((self.shape[0], n_candidates))  # 1 = intersects (diagnostic, always computed)
+        I = np.ones(
+            (self.shape[0], n_candidates)
+        )  # weighting factor (scheme-dependent)
+        I_bin = np.ones(
+            (self.shape[0], n_candidates)
+        )  # 1 = intersects (diagnostic, always computed)
         for row in range(I.shape[0]):
             self_vertices = self.clients[0].cn.cpts[self.var].vertices[row]
             for c in range(I.shape[1]):

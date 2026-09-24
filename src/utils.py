@@ -1,3 +1,4 @@
+import itertools
 from fractions import Fraction
 from tempfile import TemporaryDirectory
 
@@ -9,7 +10,6 @@ import numpy as np
 import pandas as pd
 import pyagrum as gum
 from scipy.optimize import linprog
-import itertools
 
 from src.config import safe_assert
 
@@ -58,7 +58,9 @@ def vac_cn(bn: gum.BayesNet):
 
 
 # Perturb BN parameters with probability `prob` and concentration `alpha`
-def perturb_bn_params(bn: gum.BayesNet, alpha: float, prob: float = 1.0) -> gum.BayesNet:
+def perturb_bn_params(
+    bn: gum.BayesNet, alpha: float, prob: float = 1.0
+) -> gum.BayesNet:
     """
     Each conditional X|pi_X is perturbed with probability `prob`.
     The perturbed row is drawn from Dirichlet(alpha * row), which is
@@ -135,14 +137,17 @@ def resample_bn_params(
 
     return bn_new, bn_mask
 
+
 # Compute the Jensen–Shannon divergence (JSD) between two distributions
 def jsd(p, q, eps=1e-12):
     p = np.asarray(p, dtype=float) + eps
     q = np.asarray(q, dtype=float) + eps
-    p /= p.sum(); q /= q.sum()
+    p /= p.sum()
+    q /= q.sum()
     m = 0.5 * (p + q)
     kl = lambda a, b: np.sum(a * np.log(a / b))
     return 0.5 * kl(p, m) + 0.5 * kl(q, m)
+
 
 # Compute the Jensen–Shannon divergence (JSD) between two BNs
 def jsd_bn(B1, B2, target="marginals"):
@@ -150,18 +155,17 @@ def jsd_bn(B1, B2, target="marginals"):
     if target == "joint":
         names = sorted(list(B1.names()))
 
-
         p_B1 = get_joint(B1, names)
         p_B2 = get_joint(B2, names)
 
         return jsd(p_B1, p_B2)
-    
+
     ieB1 = gum.LazyPropagation(B1)
     ieB1.makeInference()
 
     ieB2 = gum.LazyPropagation(B2)
     ieB2.makeInference()
-    
+
     results = {node: [] for node in B1.names()}
     for node in B1.names():
         p_B1 = ieB1.posterior(node).tolist()
@@ -169,6 +173,7 @@ def jsd_bn(B1, B2, target="marginals"):
         results[node].append(jsd(p_B1, p_B2))
 
     return results
+
 
 # Compute the JSD bounds between a BN `B` and a set of BNs `sampled_bns`
 def jsd_bounds_from_samples(B, sampled_bns, target="marginals"):
@@ -182,7 +187,12 @@ def jsd_bounds_from_samples(B, sampled_bns, target="marginals"):
         for bn in sampled_bns:
             p_C = get_joint(bn, names)
             vals.append(jsd(p_B, p_C))
-        return {"min": min(vals), "max": max(vals), "mean": float(np.mean(vals)), "all": vals}
+        return {
+            "min": min(vals),
+            "max": max(vals),
+            "mean": float(np.mean(vals)),
+            "all": vals,
+        }
 
     ieB = gum.LazyPropagation(B)
     ieB.makeInference()
@@ -197,7 +207,12 @@ def jsd_bounds_from_samples(B, sampled_bns, target="marginals"):
             results[node].append(jsd(p_B, p_C))
 
     return {
-        node: {"min": min(v), "max": max(v), "mean": float(np.mean(v)), "std": np.std(v)}
+        node: {
+            "min": min(v),
+            "max": max(v),
+            "mean": float(np.mean(v)),
+            "std": np.std(v),
+        }
         for node, v in results.items()
     }
 
@@ -274,7 +289,7 @@ def lookup_cpt_row(entry: dict, parents: dict = None) -> np.array:
 
 
 # Get the joint distribution of a BN, ordered by `names`
-def get_joint(bn:gum.BayesNet, names:list):
+def get_joint(bn: gum.BayesNet, names: list):
 
     ie = gum.LazyPropagation(bn)
     ie.eraseAllEvidence()
@@ -285,6 +300,7 @@ def get_joint(bn:gum.BayesNet, names:list):
     p = p.toarray().tolist()
 
     return p
+
 
 # Compute the KL between a cset and the ground-truth distribution
 def get_kl_cset(cn: tuple, gt: gum.BayesNet, var, parents):
@@ -946,6 +962,7 @@ def vertices_cset(vec_min, vec_max) -> np.array:
 
     return vertices
 
+
 # Get CPT vertices by combining all the local ones
 def vertices_cpt(cpt_min, cpt_max):
     """
@@ -972,6 +989,7 @@ def vertices_cpt(cpt_min, cpt_max):
     for combo in itertools.product(*row_vertices):
         yield np.array(combo).flatten(), n_combos
 
+
 # Get (a subset of) all vertices of a CN's strong extension
 def vertices_cn(bn_min, bn_max, n_bns=None, seed=42, verbose=False):
     """
@@ -995,19 +1013,24 @@ def vertices_cn(bn_min, bn_max, n_bns=None, seed=42, verbose=False):
 
         # --- All combinations ---
         var_cpt_combos = {
-        var: [c[0] for c in vertices_cpt(bn_min.cpt(var), bn_max.cpt(var))]
-        for var in dag.names()
-    }
+            var: [c[0] for c in vertices_cpt(bn_min.cpt(var), bn_max.cpt(var))]
+            for var in dag.names()
+        }
         total_combos = 1
         for var in names:
             total_combos *= len(var_cpt_combos[var])
 
         if verbose:
-            print(f"[sample_extreme_bns] n_bns=None: Generating all "
-                  f"{total_combos} combinations.", flush=True)
+            print(
+                f"[sample_extreme_bns] n_bns=None: Generating all "
+                f"{total_combos} combinations.",
+                flush=True,
+            )
 
         bns = []
-        for selection in itertools.product(*[range(len(var_cpt_combos[v])) for v in names]):
+        for selection in itertools.product(
+            *[range(len(var_cpt_combos[v])) for v in names]
+        ):
             bn = gum.BayesNet(dag)
             for var, idx in zip(names, selection):
                 bn.cpt(var).fillWith(var_cpt_combos[var][idx])
@@ -1024,7 +1047,9 @@ def vertices_cn(bn_min, bn_max, n_bns=None, seed=42, verbose=False):
             cpt_max_arr = get_tabular_cpt(bn_max.cpt(var)[:])
             rows = []
             for row in range(cpt_min_arr.shape[0]):
-                v = np.atleast_2d(vertices_cset(cpt_min_arr[row, :], cpt_max_arr[row, :]))
+                v = np.atleast_2d(
+                    vertices_cset(cpt_min_arr[row, :], cpt_max_arr[row, :])
+                )
                 rows.append(v)
             var_row_vertices[var] = rows
 
@@ -1033,14 +1058,17 @@ def vertices_cn(bn_min, bn_max, n_bns=None, seed=42, verbose=False):
             bn = gum.BayesNet(dag)
             for var in names:
                 rows = var_row_vertices[var]
-                cpt_vec = np.concatenate([
-                    rows[row][rng.integers(rows[row].shape[0])]
-                    for row in range(len(rows))
-                ])
+                cpt_vec = np.concatenate(
+                    [
+                        rows[row][rng.integers(rows[row].shape[0])]
+                        for row in range(len(rows))
+                    ]
+                )
                 bn.cpt(var).fillWith(cpt_vec)
             bns.append(bn)
         return bns
-    
+
+
 # BNs sampler from a CN
 def sample_from_cn(bn_min, bn_max, n_bns: int) -> list:
 
@@ -1062,7 +1090,9 @@ def sample_from_cn(bn_min, bn_max, n_bns: int) -> list:
     for i, var in enumerate(names):
 
         # ... sample `n_bns` CPTs from the CN
-        cpts_dict[var] = sample_from_cpts(bn_min.cpt(var), bn_max.cpt(var), n_bns, seed_offset=i)
+        cpts_dict[var] = sample_from_cpts(
+            bn_min.cpt(var), bn_max.cpt(var), n_bns, seed_offset=i
+        )
 
     # For each sample ...
     bns = []
@@ -1088,7 +1118,7 @@ def sample_from_cn(bn_min, bn_max, n_bns: int) -> list:
 
 
 # Sample from two extreme CPTs
-def sample_from_cpts(cpt_min, cpt_max, n_bns, seed_offset = 0) -> list:
+def sample_from_cpts(cpt_min, cpt_max, n_bns, seed_offset=0) -> list:
 
     # Transform CPTs into pandas dataframes
     cpt_min = get_tabular_cpt(cpt_min)
@@ -1099,7 +1129,12 @@ def sample_from_cpts(cpt_min, cpt_max, n_bns, seed_offset = 0) -> list:
     for row in range(cpt_min.shape[0]):
 
         # ... sample `n_bns` points from the credal set
-        credal_dict[row] = sample_from_cset(cpt_min[row, :], cpt_max[row, :], n_bns, seed=hash((seed_offset, row)) % (2**32))
+        credal_dict[row] = sample_from_cset(
+            cpt_min[row, :],
+            cpt_max[row, :],
+            n_bns,
+            seed=hash((seed_offset, row)) % (2**32),
+        )
 
     # For each sample ...
     cpt_samples = []
@@ -1122,7 +1157,7 @@ def sample_from_cpts(cpt_min, cpt_max, n_bns, seed_offset = 0) -> list:
 
 
 # Sample from a credal set K(x | pi_x), i.e., a constrained polytope.
-def sample_from_cset(vec_min, vec_max, n_bns, seed = 42) -> list:
+def sample_from_cset(vec_min, vec_max, n_bns, seed=42) -> list:
     """
     We assume a credal set is a polytope in a space of #X parameters, defined by a:
      - Multi-dimensional rectangle, i.e., inequality constraint Ax <= b, and
@@ -1131,8 +1166,8 @@ def sample_from_cset(vec_min, vec_max, n_bns, seed = 42) -> list:
     """
 
     # Degenerate case
-    if np.all(vec_min == vec_max): 
-        return [vec_min]*n_bns
+    if np.all(vec_min == vec_max):
+        return [vec_min] * n_bns
 
     # Define the rectangle
     n_par = len(vec_min)
@@ -1274,6 +1309,7 @@ def learn_bn_params(bn, data):
     bn_learnt = learner.learnParameters(bn_copy)
 
     return bn_learnt
+
 
 # Extract a subgraph from a given BN
 def get_subgraph(bn, vars_to_keep: set):
