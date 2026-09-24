@@ -15,8 +15,8 @@ import pyagrum as gum
 
 from src.config import create_clean_dir, load_config, set_seed
 from src.mosaic import Client
-from src.utils import (jsd_bn, jsd_credal_stats, perturb_bn_params,
-                       snapshot_cpts)
+from src.utils import (gt_containment_frac, jsd_bn, jsd_credal_stats,
+                       perturb_bn_params, snapshot_cpts)
 
 n_jobs = max(1, len(os.sched_getaffinity(0)) - 1)
 
@@ -26,7 +26,7 @@ n_jobs = max(1, len(os.sched_getaffinity(0)) - 1)
 WEIGHTING_SCHEMES = (1, 2, 3)
 
 # Hyperparameters swept as a grid (cartesian product): each is a list in
-# conf.yaml, even when it holds a single value. One full (s_sizes x
+# conf1.yaml, even when it holds a single value. One full (s_sizes x
 # n_repetitions x WEIGHTING_SCHEMES) sweep is run per combination.
 GRID_KEYS = ("n_clients", "ess", "prob_shift", "alpha")
 
@@ -39,6 +39,8 @@ ROW_FIELDNAMES = (
     + ["size", "rep", "mle", "idm_min", "idm_mean", "idm_max"]
     + [f"mos_w{w}_{stat}" for w in WEIGHTING_SCHEMES for stat in ("min", "mean", "max")]
     + ["intersection_frac"]
+    + ["idm_gt_contained"]
+    + [f"mos_w{w}_gt_contained" for w in WEIGHTING_SCHEMES]
 )
 
 
@@ -153,6 +155,22 @@ def exp(config, n, rep) -> tuple:
         models["idm_min"] = snapshot_cpts(client_exp.cn.bn_min)
         models["idm_max"] = snapshot_cpts(client_exp.cn.bn_max)
 
+    # Empirical check of "Reliability of credal sets" (cap6_extract.tex,
+    # Definition `as:credal`): fraction of individual CPT entries across
+    # the network (see gt_containment_frac) where bn_base's own
+    # (ground-truth) value is actually contained in this credal set. Unlike
+    # theta_hat^e (the MLE, always inside the local IDM credal set for any
+    # ess -- an algebraic fact, not an assumption), containment of the
+    # TRUE, unknown ground truth is a statistical property that is not
+    # guaranteed and can reasonably fail, especially at small sample sizes
+    # -- this measures how often it holds in practice, for IDM and (below)
+    # for each MOSAIC-updated credal set. Computed directly from the live
+    # bn_min/bn_max (not through `models`), so it's always available
+    # regardless of save_models.
+    row["idm_gt_contained"] = gt_containment_frac(
+        bn_base, client_exp.cn.bn_min, client_exp.cn.bn_max
+    )
+
     # MOSAIC, once per weighting schema. The network-wide median fraction of
     # clients intersecting the prior only depends on the target/candidates'
     # own credal sets (not on the weighting formula), so it's identical
@@ -179,6 +197,9 @@ def exp(config, n, rep) -> tuple:
         row[f"mos_w{w}_min"] = mos_stats["min"]
         row[f"mos_w{w}_mean"] = mos_stats["mean"]
         row[f"mos_w{w}_max"] = mos_stats["max"]
+        row[f"mos_w{w}_gt_contained"] = gt_containment_frac(
+            bn_base, client_exp.cn_mosaic.bn_min, client_exp.cn_mosaic.bn_max
+        )
         if save_models:
             models[f"mos_w{w}_min"] = snapshot_cpts(client_exp.cn_mosaic.bn_min)
             models[f"mos_w{w}_max"] = snapshot_cpts(client_exp.cn_mosaic.bn_max)
@@ -208,7 +229,7 @@ def hyperparameter_combos(config) -> list:
     byte-for-byte identical to each other (confirmed empirically: exp() with
     prob_shift=0 does not even draw any alpha-dependent randomness), wasting
     compute and, downstream, showing as redundant duplicate columns in the
-    grid plot (Plot_JS.ipynb facets on the DISTINCT (prob_shift, alpha)
+    grid plot (plot1.ipynb facets on the DISTINCT (prob_shift, alpha)
     pairs actually present in df_tot.csv). Only ONE alpha value -- the
     grid's first -- is used per (n_clients, ess, prob_shift=0.0) combo
     instead.
@@ -257,14 +278,17 @@ def _model_filename(task_id: tuple) -> str:
 def _check_unique_task_ids(tasks: list) -> None:
     """
     task_id = (n_clients, ess, prob_shift, alpha, size, rep) is what names
-    every CSV row and every model file (see main()), so it must be unique
-    across the whole task list. It is unique BY CONSTRUCTION as long as
-    every grid list in conf.yaml holds distinct values (build_tasks's
-    Cartesian product can't otherwise produce the same combination twice)
-    -- this catches the one way that invariant can break (e.g. an
-    accidental duplicate like `ess: [1, 1]`), which would otherwise
-    silently make two different tasks overwrite the same CSV row / model
-    file.
+    every CSV row and every model file (see run_grid()), so it must be
+    unique across the whole task list. Shared by exp1.py and exp2.py:
+    generic over how `tasks` was built, it only assumes each entry is a
+    (config, n, rep) tuple whose config has every GRID_KEYS key resolved to
+    a plain scalar. For exp1.py's full Cartesian grid, uniqueness holds BY
+    CONSTRUCTION as long as every grid list in conf1.yaml holds distinct
+    values (build_tasks's Cartesian product can't otherwise produce the
+    same combination twice) -- this catches the one way that invariant can
+    break (e.g. an accidental duplicate like `ess: [1, 1]`), which would
+    otherwise silently make two different tasks overwrite the same CSV row
+    / model file.
     """
     task_ids = [tuple(cfg[k] for k in GRID_KEYS) + (n, rep) for cfg, n, rep in tasks]
     if len(task_ids) != len(set(task_ids)):
@@ -272,8 +296,8 @@ def _check_unique_task_ids(tasks: list) -> None:
         for t in task_ids:
             (dupes if t in seen else seen).add(t)
         raise AssertionError(
-            "Duplicate task_id(s) in the task list -- check conf.yaml for "
-            f"duplicate values within a single grid hyperparameter list: {dupes}"
+            "Duplicate task_id(s) in the task list -- check the config file "
+            f"for duplicate values within a single grid hyperparameter list: {dupes}"
         )
 
 
@@ -336,71 +360,57 @@ def _log_memory(
     )
 
 
-def main():
+def run_grid(
+    tasks: list, res_path: Path, save_models: bool, max_tasks_per_child: int
+) -> None:
+    """
+    Shared, memory-safe execution engine for a flattened task list -- used
+    by both exp1.py's (full 4D grid) and exp2.py's (1D prob_shift sweep)
+    main(), so the actual scheduling/writing logic is maintained in exactly
+    one place. `tasks` is any list of (config, n, rep) tuples, each config
+    holding every GRID_KEYS key resolved to a plain scalar (see
+    _check_unique_task_ids).
 
-    # Set seed
-    set_seed()
+    Each worker is a long-lived process handling MANY tasks over the whole
+    run (Pool(processes=n_jobs) forks n_jobs workers ONCE, not once per
+    task). sample_from_cset (src/utils.py), via the `hopsy` MCMC polytope
+    sampler, leaks memory per call in a way gc.collect() cannot reclaim --
+    confirmed empirically (isolated to that one function; unaffected by
+    forcing Python's garbage collector) at ~5.5MB per exp() task, i.e.
+    unbounded growth over a long run regardless of save_models (this has
+    nothing to do with archiving models). `maxtasksperchild` makes the
+    pool retire and fork a fresh replacement worker after it has handled
+    this many tasks, so the OS reclaims 100% of that worker's memory
+    (leaked or not) periodically -- the standard fix for a leaky C
+    extension inside a long-running pool worker, and the only one that
+    doesn't require fixing the leak inside hopsy/PolyRound itself.
 
-    # Choose configurationc file
-    config = load_config("conf.yaml")
-    save_models = config.get("save_models", True)
-    # Each worker is a long-lived process handling MANY tasks over the whole
-    # run (Pool(processes=n_jobs) forks n_jobs workers ONCE, not once per
-    # task). sample_from_cset (src/utils.py), via the `hopsy` MCMC polytope
-    # sampler, leaks memory per call in a way gc.collect() cannot reclaim --
-    # confirmed empirically (isolated to that one function; unaffected by
-    # forcing Python's garbage collector) at ~5.5MB per exp() task, i.e.
-    # unbounded growth over a long run regardless of save_models (this has
-    # nothing to do with archiving models). `maxtasksperchild` makes the
-    # pool retire and fork a fresh replacement worker after it has handled
-    # this many tasks, so the OS reclaims 100% of that worker's memory
-    # (leaked or not) periodically -- the standard fix for a leaky C
-    # extension inside a long-running pool worker, and the only one that
-    # doesn't require fixing the leak inside hopsy/PolyRound itself.
-    max_tasks_per_child = config.get("max_tasks_per_child", 100)
+    Workers only ever RETURN (row, models, task_id) tuples through the pool
+    -- they never touch the filesystem (see `exp`/`_exp_star`). Every
+    result is written to disk THE MOMENT it arrives here, in this single
+    parent process/thread, instead of being buffered in memory for the
+    whole run: `imap_unordered` yields one result at a time, so there is
+    no concurrent-write risk regardless of how many workers run, and no
+    possibility of two tasks racing on the same file. This replaces the
+    previous design, which held every row AND every task's models in RAM
+    (`rows`/`models_by_task` lists) until the very end -- measured at
+    ~90KB/task in-memory just for `models`, i.e. several GB for a large
+    grid, growing for the run's entire multi-hour duration and never
+    freed. Each row is self-identified by its own hyperparameter/size/rep
+    columns (checked against task_id below), so results always land at the
+    correct place in df_tot.csv independently of completion order.
+    """
+    _check_unique_task_ids(tasks)
 
-    # Create the (single) empty results folder for the whole grid
-    res_path = Path(config["res_path"])
+    res_path = Path(res_path)
     create_clean_dir(res_path)
     models_dir = res_path / "models"
     if save_models:
         models_dir.mkdir(parents=True, exist_ok=True)
 
-    sizes_dict = config["s_sizes"]
-    sizes = [
-        int(x)
-        for x in np.arange(sizes_dict["min"], sizes_dict["max"], sizes_dict["step"])
-    ]
-
-    tasks = build_tasks(config, sizes)
-    _check_unique_task_ids(tasks)
-
-    # NOT the naive n_clients x ess x prob_shift x alpha product: alpha is
-    # deduplicated away for prob_shift == 0.0 (see hyperparameter_combos).
-    n_combos = len(hyperparameter_combos(config))
-    print(
-        f"# {n_combos} hyperparameter combinations x {len(sizes)} sizes x "
-        f"{config['n_repetitions']} repetitions = {len(tasks)} total tasks "
-        f"on {n_jobs} workers (save_models={save_models})",
-        flush=True,
-    )
     # Log memory roughly 200 times over the whole run, regardless of grid size.
     mem_log_every = max(1, len(tasks) // 200)
 
-    # Workers only ever RETURN (row, models, task_id) tuples through the pool
-    # -- they never touch the filesystem (see `exp`/`_exp_star`). Every
-    # result is written to disk THE MOMENT it arrives here, in this single
-    # parent process/thread, instead of being buffered in memory for the
-    # whole run: `imap_unordered` yields one result at a time, so there is
-    # no concurrent-write risk regardless of how many workers run, and no
-    # possibility of two tasks racing on the same file. This replaces the
-    # previous design, which held every row AND every task's models in RAM
-    # (`rows`/`models_by_task` lists) until the very end -- measured at
-    # ~90KB/task in-memory just for `models`, i.e. several GB for a large
-    # grid, growing for the run's entire multi-hour duration and never
-    # freed. Each row is self-identified by its own hyperparameter/size/rep
-    # columns (checked against task_id below), so results always land at the
-    # correct place in df_tot.csv independently of completion order.
     csv_path = res_path / "df_tot.csv"
     n_written = 0
     n_failed = 0
@@ -460,6 +470,37 @@ def main():
         flush=True,
     )
     gc.collect()
+
+
+def main():
+
+    # Set seed
+    set_seed()
+
+    # Choose configuration file
+    config = load_config("conf1.yaml")
+    save_models = config.get("save_models", True)
+    max_tasks_per_child = config.get("max_tasks_per_child", 100)
+
+    sizes_dict = config["s_sizes"]
+    sizes = [
+        int(x)
+        for x in np.arange(sizes_dict["min"], sizes_dict["max"], sizes_dict["step"])
+    ]
+
+    tasks = build_tasks(config, sizes)
+
+    # NOT the naive n_clients x ess x prob_shift x alpha product: alpha is
+    # deduplicated away for prob_shift == 0.0 (see hyperparameter_combos).
+    n_combos = len(hyperparameter_combos(config))
+    print(
+        f"# {n_combos} hyperparameter combinations x {len(sizes)} sizes x "
+        f"{config['n_repetitions']} repetitions = {len(tasks)} total tasks "
+        f"on {n_jobs} workers (save_models={save_models})",
+        flush=True,
+    )
+
+    run_grid(tasks, config["res_path"], save_models, max_tasks_per_child)
 
 
 if __name__ == "__main__":

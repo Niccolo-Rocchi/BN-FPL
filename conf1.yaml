@@ -1,4 +1,5 @@
-## Configuration file (#TODO: tidy up)
+## Configuration file for exp1.py (full n_clients x ess x prob_shift x alpha
+## x sample-size grid). See conf2.yaml for the prob_shift-only sweep.
 
 # Grid hyperparameters: each is a list, swept as a cartesian product (one
 # full sweep over s_sizes x n_repetitions x weighting schemas per
@@ -13,14 +14,14 @@ s_sizes:
   min: 5
   max: 110
   step: 50
-# All 3 weighting schemas (see exp.py's WEIGHTING_SCHEMES / PriorCPT.compute)
+# All 3 weighting schemas (see exp1.py's WEIGHTING_SCHEMES / PriorCPT.compute)
 # are computed in every run, so there is no `weighting` hyperparameter here.
-res_path: results
+res_path: results1
 bn_base_path: ./cancer.bif
 n_repetitions: 2
 n_bns: 2
 # Archive every task's CPT snapshots to results/models/<task_id>.pkl (see
-# snapshot_cpts in exp.py).
+# snapshot_cpts in exp1.py).
 save_models: True
 # Retire and replace each worker process after this many tasks, so the OS
 # reclaims its memory periodically -- works around a native (non-Python,

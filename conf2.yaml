@@ -1,0 +1,20 @@
+## Configuration file for exp2.py: sweeps ONLY prob_shift, to compare the
+## 3 weighting schemas as distribution shift grows. Every other
+## hyperparameter is a single fixed scalar (NOT a list, unlike conf1.yaml).
+## Placeholder values below -- tune freely, nothing else needs to change.
+
+prob_shift: [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]  # the swept dimension
+
+n_clients: 10
+ess: 10   
+alpha: 0.1    
+size: 50       
+
+client_num: 0
+res_path: results2
+bn_base_path: ./cancer.bif
+n_repetitions: 2
+n_bns: 2
+# See conf1.yaml for what these two do.
+save_models: False
+max_tasks_per_child: 100

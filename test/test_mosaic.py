@@ -57,7 +57,7 @@ def _cn_from_bounds(bn_min, bn_max):
     """
     Build a CN directly from bn_min/bn_max, bypassing CN's `bn_min_max=`
     constructor path (which calls gum.CredalNet.intervalToCredal). That path
-    is not used anywhere in the actual exp.py/mosaic.py pipeline (every real
+    is not used anywhere in the actual exp1.py/mosaic.py pipeline (every real
     CN is built via the `cn=` path instead) and turns out to be fragile: it
     can raise a pyagrum FatalError (LRSWrapper::_initLrs_) for some bound
     combinations. The resulting gum.CredalNet is, in any case, never read

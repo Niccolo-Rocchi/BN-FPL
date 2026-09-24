@@ -1,12 +1,13 @@
 """
 Tests for src/utils.py.
 
-Covers both the functions exercised by the current `exp.py` local
-learning & update pipeline (vertices_cset, check_intersection, get_bn_counts,
-perturb_bn_params, get_cpt_index/shape/tabular, get_min_max_bns,
-jsd_credal_stats) and the broader utility library (mle_*, mne_*, ran_*,
-centroid_*, maxent_*, resample_bn_params) that isn't currently wired into
-exp.py but is kept for other uses (notebooks, future work).
+Covers both the functions exercised by the current `exp1.py`/`exp2.py`
+local learning & update pipelines (vertices_cset, check_intersection,
+get_bn_counts, perturb_bn_params, get_cpt_index/shape/tabular,
+get_min_max_bns, jsd_credal_stats, gt_containment_frac) and the broader
+utility library (mle_*, mne_*, ran_*, centroid_*, maxent_*,
+resample_bn_params) that isn't currently wired into either pipeline but is
+kept for other uses (notebooks, future work).
 """
 
 import pickle
@@ -20,10 +21,11 @@ from src.config import set_seed
 from src.utils import (centroid_cn, centroid_cset, check_consistency,
                        check_intersection, get_bn_counts, get_cpt_index,
                        get_cpt_shape, get_min_max_bns, get_parent_confs,
-                       get_tabular_cpt, jsd, learn_bn_params, lookup_cpt_row,
-                       maxent_cn, maxent_cset, mle_bn_from_counts, mle_cn,
-                       mle_cset, mne_cn, mne_cset, perturb_bn_params, ran_cn,
-                       ran_cset, resample_bn_params, snapshot_cpts, vac_cn,
+                       get_tabular_cpt, gt_containment_frac, jsd,
+                       learn_bn_params, lookup_cpt_row, maxent_cn,
+                       maxent_cset, mle_bn_from_counts, mle_cn, mle_cset,
+                       mne_cn, mne_cset, perturb_bn_params, ran_cn, ran_cset,
+                       resample_bn_params, snapshot_cpts, vac_cn,
                        vertices_cset)
 
 # BIF-file round trips (used internally by get_min_max_bns / pyagrum's
@@ -46,7 +48,7 @@ def bn_with_parent():
 
 @pytest.fixture
 def bn_nonalpha():
-    # The real network used by exp.py. Its labels are deliberately NOT in
+    # The real network used by exp1.py/exp2.py. Its labels are deliberately NOT in
     # alphabetical order for any variable (True/False, low/high,
     # positive/negative) -- this is the regression fixture for the
     # topandas()-vs-raw-array-order mismatch: cpt.topandas() sorts rows and
@@ -280,7 +282,7 @@ def test_perturb_bn_params_handles_exact_zero_entry():
 
 
 # --------------------------------------------------------------------------
-# resample_bn_params (not wired into exp.py, kept as an alternative shift
+# resample_bn_params (not wired into exp1.py/exp2.py, kept as an alternative shift
 # generator -- tested per explicit request)
 # --------------------------------------------------------------------------
 
@@ -715,7 +717,92 @@ def test_jsd_is_bounded_in_0_1():
 
 
 # --------------------------------------------------------------------------
-# snapshot_cpts: plain-numpy archival of a BN's CPTs (exp.py's models.pkl).
+# gt_containment_frac: fraction of (variable, parent-config) mechanisms
+# where a ground-truth BN's own CPT is componentwise within [bn_min, bn_max]
+# -- the empirical check for "Reliability of credal sets"
+# (cap6_extract.tex, `as:credal`).
+# --------------------------------------------------------------------------
+
+
+def test_gt_containment_frac_is_1_when_gt_equals_bounds():
+    bn = gum.fastBN("A[2]->B[2]")
+    bn.cpt("A").fillWith([0.3, 0.7])
+    bn.cpt("B").fillWith([0.2, 0.8, 0.6, 0.4])
+    assert gt_containment_frac(bn, bn, bn) == 1.0
+
+
+def test_gt_containment_frac_is_1_when_bounds_are_vacuous():
+    bn = gum.fastBN("A[2]")
+    bn.cpt("A").fillWith([0.3, 0.7])
+    bn_min = gum.BayesNet(bn)
+    bn_min.cpt("A").fillWith([0.0, 0.0])
+    bn_max = gum.BayesNet(bn)
+    bn_max.cpt("A").fillWith([1.0, 1.0])
+    assert gt_containment_frac(bn, bn_min, bn_max) == 1.0
+
+
+def test_gt_containment_frac_is_0_when_entirely_outside():
+    # Both categories' entries must individually fall outside their own
+    # bound for the (single) row to contribute 0, not just one of them.
+    bn = gum.fastBN("A[2]")
+    bn.cpt("A").fillWith([0.9, 0.1])
+    bn_min = gum.BayesNet(bn)
+    bn_min.cpt("A").fillWith([0.0, 0.0])
+    bn_max = gum.BayesNet(bn)
+    bn_max.cpt("A").fillWith([0.5, 0.05])  # 0.9 not in [0,0.5]; 0.1 not in [0,0.05]
+    assert gt_containment_frac(bn, bn_min, bn_max) == 0.0
+
+
+def test_gt_containment_frac_is_per_entry_not_per_row():
+    # A single row with only ONE of its 2 categories outside its bound
+    # contributes partial (not zero) credit: containment is counted per
+    # CPT entry (variable, parent-config, category), not per whole row --
+    # see gt_containment_frac's docstring for why this is the mathematically
+    # meaningful granularity (a row is fully contained iff ALL its entries
+    # are), not an approximation.
+    bn = gum.fastBN("A[2]")
+    bn.cpt("A").fillWith([0.9, 0.1])
+    bn_min = gum.BayesNet(bn)
+    bn_min.cpt("A").fillWith([0.0, 0.0])
+    bn_max = gum.BayesNet(bn)
+    bn_max.cpt("A").fillWith([0.5, 1.0])  # 0.9 outside [0,0.5]; 0.1 inside [0,1.0]
+    assert gt_containment_frac(bn, bn_min, bn_max) == pytest.approx(0.5)
+
+
+def test_gt_containment_frac_counts_per_variable_correctly():
+    # Two (unconnected) root variables, each with 2 entries: A's row (both
+    # entries outside) contributes 0/2, B's row (both entries inside)
+    # contributes 2/2 -- overall 2/4.
+    bn = gum.fastBN("A[2];B[2]")
+    bn.cpt("A").fillWith([0.9, 0.1])
+    bn.cpt("B").fillWith([0.5, 0.5])
+
+    bn_min, bn_max = gum.BayesNet(bn), gum.BayesNet(bn)
+    bn_min.cpt("A").fillWith([0.0, 0.0])
+    bn_max.cpt("A").fillWith([0.5, 0.05])  # A: both entries outside
+    bn_min.cpt("B").fillWith([0.0, 0.0])
+    bn_max.cpt("B").fillWith([1.0, 1.0])  # B: both entries inside
+
+    assert gt_containment_frac(bn, bn_min, bn_max) == pytest.approx(0.5)
+
+
+def test_gt_containment_frac_uses_native_row_order_on_nonalpha_network(bn_nonalpha):
+    # Regression check for the topandas()-vs-native-order pitfall: gt,
+    # bn_min, and bn_max here all come from get_tabular_cpt (native pyagrum
+    # order), so containment must be assessed row-for-row correctly on a
+    # network whose labels are NOT alphabetically ordered (see bn_nonalpha).
+    bn_min, bn_max = gum.BayesNet(bn_nonalpha), gum.BayesNet(bn_nonalpha)
+    for var in bn_nonalpha.names():
+        cpt = get_tabular_cpt(bn_nonalpha.cpt(var))
+        bn_min.cpt(var).fillWith(np.clip(cpt - 0.05, 0.0, 1.0).flatten())
+        bn_max.cpt(var).fillWith(np.clip(cpt + 0.05, 0.0, 1.0).flatten())
+
+    assert gt_containment_frac(bn_nonalpha, bn_min, bn_max) == 1.0
+
+
+# --------------------------------------------------------------------------
+# snapshot_cpts: plain-numpy archival of a BN's CPTs (exp1.py's/exp2.py's
+# per-task results/models/<task_id>.pkl files).
 # --------------------------------------------------------------------------
 
 
@@ -776,7 +863,7 @@ def test_snapshot_cpts_row_column_labels_match_ground_truth_nonalpha(bn_nonalpha
 # --------------------------------------------------------------------------
 # lookup_cpt_row: the reference way to read a value back out of a
 # snapshot_cpts() entry -- this is the actual "upload"/reload path future
-# code (and the Plot_JS.ipynb demo cell) is expected to use, so it gets its
+# code (and the plot1.ipynb demo cell) is expected to use, so it gets its
 # own tests, on a fixed network, on genuinely random networks (random
 # structure, not just a fixed one), and on the real Cancer network with
 # hand-verified ground truth.
@@ -847,7 +934,7 @@ def test_lookup_cpt_row_matches_ground_truth_on_cancer_network(bn_nonalpha):
 
 # --------------------------------------------------------------------------
 # Full round trip: snapshot -> pickle.dumps -> pickle.loads -> lookup_cpt_row
-# (the exact path exp.py's models.pkl / a future "upload" consumer go
+# (the exact path exp1.py's/exp2.py's per-task pickle files / a future "upload" consumer go
 # through), cross-checked against directly querying the SAME live BN --
 # both on the real Cancer network (with a genuine, non-trivial parameter
 # perturbation, not hand-typed "nice" numbers) and on random networks.

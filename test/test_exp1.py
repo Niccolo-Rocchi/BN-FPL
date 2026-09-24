@@ -1,16 +1,19 @@
 """
-Tests for exp.py: the end-to-end local learning & update pipeline.
+Tests for exp1.py: the full-grid local learning & update pipeline. exp2.py
+(the prob_shift-only sweep) reuses exp1.exp()/run_grid() as-is -- see
+test_exp2.py for its own (much smaller) task-building tests; the actual
+per-task computation is only tested here, once.
 
 exp(config, n, rep) is fully self-contained (no worker-global state, so it
 is called directly here with an explicit config -- no pool/initializer
-needed) and returns (row, models, task_id): `row` is the JSD summary dict
-(destined for one line of df_tot.csv), `models` is a dict of raw CPT
-snapshots (destined for its own results/models/<task_id>.pkl file, kept for
-the future global optimization phase -- empty when config["save_models"] is
-False, which conf.yaml sets for a plain local-learning-and-update sweep
-(exp()'s own fallback, if the key is missing entirely, is True), and
-`task_id` is the (n_clients, ess, prob_shift, alpha, size, rep) key both are
-filed under.
+needed) and returns (row, models, task_id): `row` is the JSD/containment
+summary dict (destined for one line of df_tot.csv), `models` is a dict of
+raw CPT snapshots (destined for its own results/models/<task_id>.pkl file,
+kept for the future global optimization phase -- empty when
+config["save_models"] is False, which conf1.yaml sets for a plain
+local-learning-and-update sweep (exp()'s own fallback, if the key is
+missing entirely, is True), and `task_id` is the (n_clients, ess,
+prob_shift, alpha, size, rep) key both are filed under.
 """
 
 import copy
@@ -19,8 +22,9 @@ import numpy as np
 import pyagrum as gum
 import pytest
 
-import exp as exp_mod
+import exp1 as exp_mod
 from src.config import set_seed
+from src.utils import gt_containment_frac
 
 EXPECTED_ROW_KEYS = (
     set(exp_mod.GRID_KEYS)
@@ -30,6 +34,8 @@ EXPECTED_ROW_KEYS = (
         for w in exp_mod.WEIGHTING_SCHEMES
         for stat in ("min", "mean", "max")
     }
+    | {"idm_gt_contained"}
+    | {f"mos_w{w}_gt_contained" for w in exp_mod.WEIGHTING_SCHEMES}
 )
 
 EXPECTED_MODEL_KEYS = {"bn_mle", "idm_min", "idm_max"} | {
@@ -81,7 +87,44 @@ def test_exp_returns_expected_schema_and_sane_values():
     # ess -- see test_idm_min_never_exceeds_mle below.
     assert row["idm_min"] <= row["mle"] + 1e-9
 
+    assert 0.0 <= row["idm_gt_contained"] <= 1.0
+    for w in exp_mod.WEIGHTING_SCHEMES:
+        assert 0.0 <= row[f"mos_w{w}_gt_contained"] <= 1.0
+
     assert task_id == (5, 2, 1.0, 20, 50, 0)  # GRID_KEYS order + (size, rep)
+
+
+def test_gt_contained_matches_direct_computation():
+    # Cross-check exp()'s idm_gt_contained/mos_w{w}_gt_contained against
+    # gt_containment_frac called directly on the SAME live credal sets
+    # (rebuilt from the same seed), rather than trusting the wiring blindly.
+    config = BASE_CONFIG
+    np.random.seed(hash((50, 0)) % (2**32))
+    gum.initRandom(hash((50, 0)) % (2**32))
+    clients = exp_mod.init_clients(config)
+    for c in clients.values():
+        c.generate_base_info(50, config["ess"])
+    client_exp = clients[config["client_num"]]
+    prior_clients = [client_exp] + [
+        c for e, c in clients.items() if e != config["client_num"]
+    ]
+    bn_base = gum.loadBN(config["bn_base_path"])
+
+    row, _, _ = exp_mod.exp(config, 50, rep=0)
+
+    expected_idm = gt_containment_frac(
+        bn_base, client_exp.cn.bn_min, client_exp.cn.bn_max
+    )
+    assert row["idm_gt_contained"] == pytest.approx(expected_idm)
+
+    for w in exp_mod.WEIGHTING_SCHEMES:
+        client_exp.reset_prior()
+        client_exp.prior_cn.compute(prior_clients, weighting=w)
+        client_exp.mosaic_cn()
+        expected_mos = gt_containment_frac(
+            bn_base, client_exp.cn_mosaic.bn_min, client_exp.cn_mosaic.bn_max
+        )
+        assert row[f"mos_w{w}_gt_contained"] == pytest.approx(expected_mos)
 
 
 @pytest.mark.parametrize("ess", [1, 2, 5, 10, 20])
@@ -153,7 +196,7 @@ def test_row_fieldnames_matches_row_schema():
 
 def test_exp_save_models_false_skips_model_computation():
     # save_models=False (the default for a plain local-learning-and-update
-    # sweep, see conf.yaml) must skip snapshot_cpts() entirely -- not just
+    # sweep, see conf1.yaml/conf2.yaml) must skip snapshot_cpts() entirely -- not just
     # leave `models` unused -- so it also saves the compute, not only the
     # eventual pickle/RAM. `row` must be entirely unaffected.
     config = dict(BASE_CONFIG, save_models=False)
@@ -209,7 +252,7 @@ def test_check_unique_task_ids_passes_for_a_normal_grid():
 def test_check_unique_task_ids_raises_on_duplicate_grid_value():
     # Regression test for the exact failure mode this check exists to catch:
     # a duplicate value inside one grid hyperparameter list (e.g. a typo'd
-    # `ess: [1, 1]` in conf.yaml) makes build_tasks silently emit the same
+    # `ess: [1, 1]` in conf1.yaml) makes build_tasks silently emit the same
     # task_id twice, which would otherwise make the second task's CSV row /
     # model file silently overwrite the first's.
     config = dict(

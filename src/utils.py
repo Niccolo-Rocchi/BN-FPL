@@ -239,7 +239,7 @@ def jsd_credal_stats(bn_base, bn_min, bn_max, n_bns, target="joint") -> dict:
 
 
 # Self-contained, plain-numpy snapshot of every CPT in `bn`, keyed by
-# variable name -- for archiving a model (e.g. exp.py's per-task pickle)
+# variable name -- for archiving a model (e.g. exp1.py's per-task pickle)
 # independently of pyagrum, so it can be reloaded later (e.g. for the global
 # optimization phase in cap6_extract.tex) without needing pyagrum objects.
 #
@@ -1241,6 +1241,41 @@ def check_consistency(bn, bn_min, bn_max, verbose=False) -> int:
                 print(bn_max_cpt)
 
     return n_issues
+
+
+# Fraction of individual CPT ENTRIES across the whole network -- every
+# (variable, parent-configuration, category) triple, i.e. every single
+# probability value, not one count per row/mechanism -- where `bn_gt`'s own
+# value is within [bn_min, bn_max] at that same entry. Since a credal set's
+# per-row bounds are a box constraint, a whole row/mechanism's distribution
+# is contained in its credal set iff EVERY one of its entries individually
+# satisfies its own [min, max] -- so this entry-level fraction is finer
+# grained than (and equal to 1.0 exactly when) full row-wise containment:
+# a row with e.g. 1 of 2 categories outside its bound contributes partial,
+# not zero, credit here. Used to empirically check Definition "Reliability
+# of credal sets" (cap6_extract.tex, `as:credal`): whether
+# theta^e_{X|pi_X} is actually contained in K^e_{X|pi_X}. Unlike the
+# guarantee that theta_hat^e (the MLE) is always inside the local IDM
+# credal set for any ess (a fact, provable algebraically -- see exp1.py),
+# containment of the true, unknown ground-truth parameters is NOT
+# guaranteed in general and is exactly what this function measures
+# empirically, for IDM's own local credal set and for each MOSAIC-updated
+# one alike.
+def gt_containment_frac(
+    bn_gt: gum.BayesNet, bn_min: gum.BayesNet, bn_max: gum.BayesNet
+) -> float:
+    total = 0
+    ok = 0
+    for var in bn_gt.names():
+        gt_cpt = get_tabular_cpt(bn_gt.cpt(var))
+        min_cpt = get_tabular_cpt(bn_min.cpt(var))
+        max_cpt = get_tabular_cpt(bn_max.cpt(var))
+
+        within = (gt_cpt >= min_cpt - 1e-9) & (gt_cpt <= max_cpt + 1e-9)
+        total += within.size
+        ok += int(within.sum())
+
+    return ok / total
 
 
 # Extract BN min and BN max from a CN
