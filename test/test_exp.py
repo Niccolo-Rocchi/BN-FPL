@@ -77,8 +77,39 @@ def test_exp_returns_expected_schema_and_sane_values():
 
     assert 0.0 <= row["intersection_frac"] <= 1.0
     assert row["mle"] >= 0.0
+    # theta_hat^e is always a member of the local IDM credal set, for any
+    # ess -- see test_idm_min_never_exceeds_mle below.
+    assert row["idm_min"] <= row["mle"] + 1e-9
 
     assert task_id == (5, 2, 1.0, 20, 50, 0)  # GRID_KEYS order + (size, rep)
+
+
+@pytest.mark.parametrize("ess", [1, 2, 5, 10, 20])
+def test_idm_min_never_exceeds_mle(ess):
+    # Regression test: for every count n_k out of N, IDM's local credal
+    # interval is [n_k/(N+ess), (n_k+ess)/(N+ess)], which always contains
+    # the MLE n_k/N for any ess > 0 (n_k/(N+ess) <= n_k/N always; n_k/N <=
+    # (n_k+ess)/(N+ess) iff n_k <= N, always true) -- so theta_hat^e is
+    # always a valid member of the credal network's strong extension, and
+    # idm_min must never exceed row["mle"].
+    #
+    # Before the fix, idm_min was a pure Monte Carlo estimate (hopsy-
+    # sampled, n_bns draws) of the credal set's minimum JSD -- not exact,
+    # since JSD is convex (not concave) in its second argument, so unlike
+    # the max, the min is not vertex-attained and generally sits at an
+    # interior point. For a WIDE credal set (large ess) in the network's
+    # many-CPT-row joint parameter space, a small sample can systematically
+    # miss the region near the true minimum (which, at prob_shift=0, sits
+    # close to theta_hat^e, itself close to bn_base) -- confirmed
+    # empirically: idm_min > mle at ess=10 with the default n_bns, closing
+    # only as n_bns grows into the thousands. The fix folds row["mle"]
+    # (already computed, zero extra cost) into idm_min as a guaranteed
+    # exact sample, fixing this exactly rather than merely reducing its
+    # probability.
+    config = dict(BASE_CONFIG, n_clients=2, prob_shift=0.0, ess=ess, n_bns=50)
+    for n in (20, 100, 300):
+        row, _, _ = exp_mod.exp(config, n, rep=0)
+        assert row["idm_min"] <= row["mle"] + 1e-9, (ess, n, row["idm_min"], row["mle"])
 
 
 def test_exp_models_snapshot_is_well_formed():

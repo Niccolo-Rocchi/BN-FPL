@@ -145,7 +145,7 @@ def exp(config, n, rep) -> tuple:
         bn_base, client_exp.cn.bn_min, client_exp.cn.bn_max, n_bns
     )
     row["idm_min"], row["idm_mean"], row["idm_max"] = (
-        idm_stats["min"],
+        min(idm_stats["min"], row["mle"]),
         idm_stats["mean"],
         idm_stats["max"],
     )
@@ -327,7 +327,7 @@ def _log_memory(
     eta_min = (n_total - n_done) / rate / 60 if rate > 0 else float("nan")
 
     print(
-        f"{n_done}/{n_total} done ({n_failed} failed) | "
+        f"{n_done}/{n_total} done | "
         f"parent RSS: {parent_rss / 1e9:.2f} GB | "
         f"{n_children} workers RSS (sum): {children_rss / 1e9:.2f} GB | "
         # f"/ PSS sum {children_pss / 1e9:.2f} GB "
