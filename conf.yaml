@@ -19,3 +19,6 @@ res_path: results
 bn_base_path: ./cancer.bif
 n_repetitions: 2
 n_bns: 2
+# Archive every task's CPT snapshots to results/models/<task_id>.pkl (see
+# snapshot_cpts in exp.py).
+save_models: False

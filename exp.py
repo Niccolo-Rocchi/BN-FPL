@@ -1,13 +1,14 @@
+import csv
 import gc
 import itertools
 import multiprocessing as mp
 import pickle
-import sys
+import time
 from pathlib import Path
 import traceback
 
 import numpy as np
-import pandas as pd
+import psutil
 import pyagrum as gum
 from tqdm import tqdm
 
@@ -29,6 +30,17 @@ WEIGHTING_SCHEMES = (1, 2, 3)
 # conf.yaml, even when it holds a single value. One full (s_sizes x
 # n_repetitions x WEIGHTING_SCHEMES) sweep is run per combination.
 GRID_KEYS = ("n_clients", "ess", "prob_shift", "alpha")
+
+# Exact set (and order) of keys every `exp()` call's `row` carries -- fixed
+# by WEIGHTING_SCHEMES/GRID_KEYS above, identical for every task regardless
+# of hyperparameters. Used both as the CSV header (main()) and as a
+# self-consistency check on every row before it is written.
+ROW_FIELDNAMES = (
+    list(GRID_KEYS)
+    + ["size", "rep", "mle", "idm_min", "idm_mean", "idm_max"]
+    + [f"mos_w{w}_{stat}" for w in WEIGHTING_SCHEMES for stat in ("min", "mean", "max")]
+    + ["intersection_frac"]
+)
 
 
 def init_clients(config, verbose=False) -> list:
@@ -84,6 +96,13 @@ def exp(config, n, rep) -> tuple:
 
     client_num = config["client_num"]
     n_bns = config["n_bns"]
+    # Whether to archive CPT snapshots for this task (see `models` below).
+    # Needed only for the future global optimization phase; the models
+    # dominate a task's memory footprint (~90KB vs ~1KB for `row` alone,
+    # measured), so this is off by default for a plain local-learning-and-
+    # update sweep. Read from `config` (not a separate argument) to keep
+    # `exp()`'s signature self-contained, matching every other hyperparameter.
+    save_models = config.get("save_models", True)
     bn_base = gum.loadBN(config["bn_base_path"])
 
     # Generate a fresh data-generating process for this repetition (i.e. new
@@ -114,11 +133,14 @@ def exp(config, n, rep) -> tuple:
     # -- the prior and the resulting MOSAIC-updated credal set. Needed later
     # for the global optimization phase (cap6_extract.tex), which reads
     # theta^i in K^{i+}_{X|pi_X} directly from the updated credal sets.
+    # Skipped entirely (not just left unused) when save_models is False, so
+    # disabling it also saves the snapshot_cpts() compute, not just the RAM.
     models = {}
 
     # MLE and IDM (no update): identical across weighting schemas, computed once.
     row["mle"] = jsd_bn(bn_base, client_exp.bn_mle, target="joint")
-    models["bn_mle"] = snapshot_cpts(client_exp.bn_mle)
+    if save_models:
+        models["bn_mle"] = snapshot_cpts(client_exp.bn_mle)
 
     idm_stats = jsd_credal_stats(
         bn_base, client_exp.cn.bn_min, client_exp.cn.bn_max, n_bns
@@ -128,8 +150,9 @@ def exp(config, n, rep) -> tuple:
         idm_stats["mean"],
         idm_stats["max"],
     )
-    models["idm_min"] = snapshot_cpts(client_exp.cn.bn_min)
-    models["idm_max"] = snapshot_cpts(client_exp.cn.bn_max)
+    if save_models:
+        models["idm_min"] = snapshot_cpts(client_exp.cn.bn_min)
+        models["idm_max"] = snapshot_cpts(client_exp.cn.bn_max)
 
     # MOSAIC, once per weighting schema. The network-wide median fraction of
     # clients intersecting the prior only depends on the target/candidates'
@@ -145,8 +168,9 @@ def exp(config, n, rep) -> tuple:
         if w == 2:
             intersection_frac = median_intersection
 
-        models[f"prior_w{w}_min"] = snapshot_cpts(client_exp.prior_cn.bn_min)
-        models[f"prior_w{w}_max"] = snapshot_cpts(client_exp.prior_cn.bn_max)
+        if save_models:
+            models[f"prior_w{w}_min"] = snapshot_cpts(client_exp.prior_cn.bn_min)
+            models[f"prior_w{w}_max"] = snapshot_cpts(client_exp.prior_cn.bn_max)
 
         client_exp.mosaic_cn()
 
@@ -156,8 +180,9 @@ def exp(config, n, rep) -> tuple:
         row[f"mos_w{w}_min"] = mos_stats["min"]
         row[f"mos_w{w}_mean"] = mos_stats["mean"]
         row[f"mos_w{w}_max"] = mos_stats["max"]
-        models[f"mos_w{w}_min"] = snapshot_cpts(client_exp.cn_mosaic.bn_min)
-        models[f"mos_w{w}_max"] = snapshot_cpts(client_exp.cn_mosaic.bn_max)
+        if save_models:
+            models[f"mos_w{w}_min"] = snapshot_cpts(client_exp.cn_mosaic.bn_min)
+            models[f"mos_w{w}_max"] = snapshot_cpts(client_exp.cn_mosaic.bn_max)
 
     row["intersection_frac"] = intersection_frac
 
@@ -196,6 +221,65 @@ def build_tasks(config, sizes) -> list:
     ]
 
 
+# Filename for one task's archived models, encoding its own task_id (see
+# `exp()`'s return value) so results are stored one-file-per-task instead of
+# a single end-of-run pickle -- see main() for why.
+def _model_filename(task_id: tuple) -> str:
+    return "_".join(str(x) for x in task_id) + ".pkl"
+
+
+def _check_unique_task_ids(tasks: list) -> None:
+    """
+    task_id = (n_clients, ess, prob_shift, alpha, size, rep) is what names
+    every CSV row and every model file (see main()), so it must be unique
+    across the whole task list. It is unique BY CONSTRUCTION as long as
+    every grid list in conf.yaml holds distinct values (build_tasks's
+    Cartesian product can't otherwise produce the same combination twice)
+    -- this catches the one way that invariant can break (e.g. an
+    accidental duplicate like `ess: [1, 1]`), which would otherwise
+    silently make two different tasks overwrite the same CSV row / model
+    file.
+    """
+    task_ids = [tuple(cfg[k] for k in GRID_KEYS) + (n, rep) for cfg, n, rep in tasks]
+    if len(task_ids) != len(set(task_ids)):
+        seen, dupes = set(), set()
+        for t in task_ids:
+            (dupes if t in seen else seen).add(t)
+        raise AssertionError(
+            "Duplicate task_id(s) in the task list -- check conf.yaml for "
+            f"duplicate values within a single grid hyperparameter list: {dupes}"
+        )
+
+
+def _log_memory(proc: psutil.Process, n_done: int, n_total: int, n_failed: int, t_start: float) -> None:
+    """
+    Print current memory usage (parent + all live worker children) and
+    throughput. See main()'s docstring-comment for how to read this.
+    """
+    parent_rss = proc.memory_info().rss
+
+    children_rss = 0
+    n_children = 0
+    for c in proc.children(recursive=True):
+        try:
+            children_rss += c.memory_info().rss
+            n_children += 1
+        except psutil.NoSuchProcess:
+            # Child exited between listing and sampling -- harmless, skip it.
+            pass
+
+    elapsed = time.time() - t_start
+    rate = n_done / elapsed if elapsed > 0 else 0.0
+    eta_min = (n_total - n_done) / rate / 60 if rate > 0 else float("nan")
+
+    tqdm.write(
+        f"[mem] {n_done}/{n_total} done ({n_failed} failed) | "
+        f"parent RSS: {parent_rss / 1e9:.2f} GB | "
+        f"{n_children} workers RSS (sum): {children_rss / 1e9:.2f} GB | "
+        f"{rate:.2f} tasks/sec | ETA: {eta_min:.1f} min"
+    )
+
+
 def main():
 
     # Set seed
@@ -203,10 +287,14 @@ def main():
 
     # Choose configurationc file
     config = load_config("conf.yaml")
+    save_models = config.get("save_models", True)
 
     # Create the (single) empty results folder for the whole grid
     res_path = Path(config["res_path"])
     create_clean_dir(res_path)
+    models_dir = res_path / "models"
+    if save_models:
+        models_dir.mkdir(parents=True, exist_ok=True)
 
     sizes_dict = config["s_sizes"]
     sizes = [
@@ -215,39 +303,91 @@ def main():
     ]
 
     tasks = build_tasks(config, sizes)
+    _check_unique_task_ids(tasks)
+
     n_combos = 1
     for v in (config[k] for k in GRID_KEYS):
         n_combos *= len(v)
     print(
         f"# {n_combos} hyperparameter combinations x {len(sizes)} sizes x "
         f"{config['n_repetitions']} repetitions = {len(tasks)} total tasks "
-        f"on {n_jobs} workers",
+        f"on {n_jobs} workers (save_models={save_models})",
         flush=True,
     )
+    # Log memory roughly 200 times over the whole run, regardless of grid size.
+    mem_log_every = max(1, len(tasks) // 200)
 
-    # Workers only ever RETURN (row, models, task_id) tuples through the
-    # pool -- they never touch the filesystem. df_tot.csv/models.pkl are
-    # written exactly once, here, after every task has completed, so there
-    # is no concurrent-write risk regardless of how many workers run.
-    rows = []
-    models_by_task = {}
-    ctx = mp.get_context("fork")
-    with ctx.Pool(processes=n_jobs) as pool:
-        for row, models, task_id in tqdm(
-            pool.imap_unordered(_exp_star, tasks), total=len(tasks)
-        ):
-            if row is None:
-                continue
-            rows.append(row)
-            models_by_task[task_id] = models
+    # Workers only ever RETURN (row, models, task_id) tuples through the pool
+    # -- they never touch the filesystem (see `exp`/`_exp_star`). Every
+    # result is written to disk THE MOMENT it arrives here, in this single
+    # parent process/thread, instead of being buffered in memory for the
+    # whole run: `imap_unordered` yields one result at a time, so there is
+    # no concurrent-write risk regardless of how many workers run, and no
+    # possibility of two tasks racing on the same file. This replaces the
+    # previous design, which held every row AND every task's models in RAM
+    # (`rows`/`models_by_task` lists) until the very end -- measured at
+    # ~90KB/task in-memory just for `models`, i.e. several GB for a large
+    # grid, growing for the run's entire multi-hour duration and never
+    # freed. Each row is self-identified by its own hyperparameter/size/rep
+    # columns (checked against task_id below), so results always land at the
+    # correct place in df_tot.csv independently of completion order.
+    csv_path = res_path / "df_tot.csv"
+    n_written = 0
+    n_failed = 0
+    proc = psutil.Process()
+    t_start = time.time()
 
-    df_tot = pd.DataFrame(rows)
-    df_tot.to_csv(res_path / "df_tot.csv", index=False)
+    with open(csv_path, "w", newline="") as csv_f:
+        writer = csv.DictWriter(csv_f, fieldnames=ROW_FIELDNAMES)
+        writer.writeheader()
+        csv_f.flush()
 
-    # task_id keys are (n_clients, ess, prob_shift, alpha, size, rep).
-    with open(res_path / "models.pkl", "wb") as f:
-        pickle.dump(models_by_task, f)
+        ctx = mp.get_context("fork")
+        with ctx.Pool(processes=n_jobs) as pool:
+            for row, models, task_id in tqdm(
+                pool.imap_unordered(_exp_star, tasks), total=len(tasks)
+            ):
+                if row is None:
+                    n_failed += 1
+                    continue
 
+                # The row must describe exactly the task it was computed
+                # for -- both in WHICH hyperparameters (task_id) and in
+                # HAVING every expected column (no more, no less).
+                row_task_id = tuple(row[k] for k in GRID_KEYS) + (row["size"], row["rep"])
+                assert row_task_id == task_id, (row_task_id, task_id)
+                assert set(row.keys()) == set(ROW_FIELDNAMES), (
+                    set(row.keys()) ^ set(ROW_FIELDNAMES)
+                )
+
+                writer.writerow(row)
+                csv_f.flush()  # visible to any reader / survives a killed process
+                n_written += 1
+                if n_written % mem_log_every == 0:
+                    os.fsync(csv_f.fileno())  # survives an OS-level crash too
+
+                if save_models and models:
+                    model_path = models_dir / _model_filename(task_id)
+                    # Append (not replace-suffix) -- filenames already
+                    # contain dots from float hyperparameters (e.g.
+                    # "..._0.5_...pkl"), and with_suffix() would need to
+                    # correctly single out the trailing ".pkl" among those.
+                    tmp_path = model_path.with_name(model_path.name + ".tmp")
+                    with open(tmp_path, "wb") as mf:
+                        pickle.dump(models, mf)
+                    tmp_path.rename(model_path)  # atomic on POSIX: no reader
+                    # ever observes a partially-written model file.
+
+                if n_written % mem_log_every == 0:
+                    _log_memory(proc, n_written, len(tasks), n_failed, t_start)
+
+        os.fsync(csv_f.fileno())
+
+    _log_memory(proc, n_written, len(tasks), n_failed, t_start)
+    print(
+        f"Done: {n_written} succeeded, {n_failed} failed, out of {len(tasks)} total tasks.",
+        flush=True,
+    )
     gc.collect()
 
 

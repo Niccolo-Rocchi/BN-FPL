@@ -4,10 +4,13 @@ Tests for exp.py: the end-to-end local learning & update pipeline.
 exp(config, n, rep) is fully self-contained (no worker-global state, so it
 is called directly here with an explicit config -- no pool/initializer
 needed) and returns (row, models, task_id): `row` is the JSD summary dict
-(destined for df_tot.csv), `models` is a dict of raw CPT snapshots (destined
-for the grid-wide models.pkl, kept for the future global optimization
-phase), and `task_id` is the (n_clients, ess, prob_shift, alpha, size, rep)
-key used to index it there.
+(destined for one line of df_tot.csv), `models` is a dict of raw CPT
+snapshots (destined for its own results/models/<task_id>.pkl file, kept for
+the future global optimization phase -- empty when config["save_models"] is
+False, which conf.yaml sets for a plain local-learning-and-update sweep
+(exp()'s own fallback, if the key is missing entirely, is True), and
+`task_id` is the (n_clients, ess, prob_shift, alpha, size, rep) key both are
+filed under.
 """
 
 import copy
@@ -109,6 +112,89 @@ def test_exp_models_snapshot_is_well_formed():
     # bn_mle's rows must be valid probability distributions.
     for var, entry in models["bn_mle"].items():
         assert np.allclose(entry["cpt"].sum(axis=1), 1.0)
+
+
+def test_row_fieldnames_matches_row_schema():
+    # main() writes df_tot.csv incrementally with csv.DictWriter(fieldnames=
+    # ROW_FIELDNAMES), which raises if a row's keys don't match exactly --
+    # this locks that invariant as a fast, direct test (rather than only
+    # discovering a mismatch mid-run, potentially hours in).
+    assert set(exp_mod.ROW_FIELDNAMES) == EXPECTED_ROW_KEYS
+    assert len(exp_mod.ROW_FIELDNAMES) == len(set(exp_mod.ROW_FIELDNAMES))
+
+
+def test_exp_save_models_false_skips_model_computation():
+    # save_models=False (the default for a plain local-learning-and-update
+    # sweep, see conf.yaml) must skip snapshot_cpts() entirely -- not just
+    # leave `models` unused -- so it also saves the compute, not only the
+    # eventual pickle/RAM. `row` must be entirely unaffected.
+    config = dict(BASE_CONFIG, save_models=False)
+    row, models, task_id = exp_mod.exp(config, 50, rep=0)
+
+    assert models == {}
+    assert set(row.keys()) == EXPECTED_ROW_KEYS
+    assert task_id == (5, 2, 1.0, 20, 50, 0)
+
+
+def test_exp_save_models_defaults_to_true():
+    # BASE_CONFIG has no "save_models" key -- omitting it must preserve the
+    # old (models-always-saved) behavior, so no other test needs updating.
+    row, models, task_id = exp_mod.exp(BASE_CONFIG, 50, rep=0)
+    assert set(models.keys()) == EXPECTED_MODEL_KEYS
+
+
+def test_model_filename_is_unique_across_a_grid():
+    config = dict(
+        BASE_CONFIG,
+        n_clients=[5, 9],
+        ess=[1, 2],
+        prob_shift=[0.0, 0.5],
+        alpha=[10, 20],
+        n_repetitions=2,
+    )
+    tasks = exp_mod.build_tasks(config, sizes=[10, 20])
+    task_ids = [
+        tuple(cfg[k] for k in exp_mod.GRID_KEYS) + (n, rep) for cfg, n, rep in tasks
+    ]
+    filenames = [exp_mod._model_filename(t) for t in task_ids]
+
+    assert len(filenames) == len(set(filenames))
+    # The filename must be exactly recoverable as the task_id's own fields,
+    # in order -- not e.g. missing a field, which could silently collide.
+    for t, fname in zip(task_ids, filenames):
+        assert fname == "_".join(str(x) for x in t) + ".pkl"
+
+
+def test_check_unique_task_ids_passes_for_a_normal_grid():
+    config = dict(
+        BASE_CONFIG,
+        n_clients=[5, 9],
+        ess=[1, 2],
+        prob_shift=[0.0],
+        alpha=[10],
+        n_repetitions=2,
+    )
+    tasks = exp_mod.build_tasks(config, sizes=[10, 20])
+    exp_mod._check_unique_task_ids(tasks)  # must not raise
+
+
+def test_check_unique_task_ids_raises_on_duplicate_grid_value():
+    # Regression test for the exact failure mode this check exists to catch:
+    # a duplicate value inside one grid hyperparameter list (e.g. a typo'd
+    # `ess: [1, 1]` in conf.yaml) makes build_tasks silently emit the same
+    # task_id twice, which would otherwise make the second task's CSV row /
+    # model file silently overwrite the first's.
+    config = dict(
+        BASE_CONFIG,
+        n_clients=[5],
+        ess=[1, 1],
+        prob_shift=[0.0],
+        alpha=[10],
+        n_repetitions=1,
+    )
+    tasks = exp_mod.build_tasks(config, sizes=[10])
+    with pytest.raises(AssertionError):
+        exp_mod._check_unique_task_ids(tasks)
 
 
 @pytest.mark.parametrize("client_num", [0, 2, 4])
