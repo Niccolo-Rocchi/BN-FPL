@@ -5,7 +5,7 @@
 # combination). A single value still needs list syntax, e.g. `ess: [2]`.
 n_clients: [5, 10]      # Number of clients
 ess: [2, 5]             # Equivalent sample size for local IDM
-prob_shift: [0.5, 0.6]  # Probability of shift in parameters between clients. 0: iid data. >0: non-iid data
+prob_shift: [0.0, 0.5]  # Probability of shift in parameters between clients. 0: iid data. >0: non-iid data
 alpha: [10, 20]         # Dirichlet concentration for parameter perturbation (higher = smaller shift)
 
 client_num: 0

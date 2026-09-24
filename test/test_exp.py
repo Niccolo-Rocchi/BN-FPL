@@ -297,6 +297,52 @@ def test_build_tasks_covers_every_combination_exactly_once():
     assert seen == expected_keys
 
 
+def test_hyperparameter_combos_deduplicates_alpha_only_for_prob_shift_zero():
+    # alpha is irrelevant when prob_shift == 0.0 (perturb_bn_params never
+    # perturbs anything at prob=0, so no alpha-dependent randomness is even
+    # drawn -- see test_prob_shift_zero_ignores_alpha below): sweeping the
+    # full alpha list there would silently produce len(alpha)-1 redundant,
+    # byte-identical tasks per (n_clients, ess) combination. Non-zero
+    # prob_shift values must still sweep the full alpha list as normal.
+    config = dict(
+        BASE_CONFIG,
+        n_clients=[5],
+        ess=[1],
+        prob_shift=[0.0, 0.5],
+        alpha=[10, 20, 30],
+    )
+    combos = exp_mod.hyperparameter_combos(config)
+
+    zero_combos = [c for c in combos if c["prob_shift"] == 0.0]
+    nonzero_combos = [c for c in combos if c["prob_shift"] == 0.5]
+
+    assert len(zero_combos) == 1  # not len(alpha) == 3
+    assert zero_combos[0]["alpha"] == config["alpha"][0]
+    assert len(nonzero_combos) == len(config["alpha"]) == 3
+    assert sorted(c["alpha"] for c in nonzero_combos) == sorted(config["alpha"])
+
+    # build_tasks (and hence main()'s printed combo count) must reflect the
+    # same, deduplicated total -- not the naive n_clients x ess x prob_shift
+    # x alpha product.
+    tasks = exp_mod.build_tasks(dict(config, n_repetitions=1), sizes=[10])
+    assert len(tasks) == len(combos) == 4  # 1 (prob_shift=0) + 3 (prob_shift=0.5)
+
+
+def test_prob_shift_zero_ignores_alpha():
+    # Direct empirical confirmation of the premise behind the dedup above:
+    # at prob_shift=0.0, every client is an unperturbed copy of bn_base
+    # regardless of alpha, so exp()'s entire result must be identical no
+    # matter which alpha value is used.
+    config_a = dict(BASE_CONFIG, prob_shift=0.0, alpha=5)
+    config_b = dict(BASE_CONFIG, prob_shift=0.0, alpha=500)
+
+    row_a, _, id_a = exp_mod.exp(config_a, 40, rep=0)
+    row_b, _, id_b = exp_mod.exp(config_b, 40, rep=0)
+
+    for key in EXPECTED_ROW_KEYS - {"alpha"}:
+        assert np.isclose(row_a[key], row_b[key], atol=1e-12), key
+
+
 def test_prior_clients_excludes_target_regardless_of_client_num(clients_template):
     # Direct regression test for the client_num generalization: prior_clients
     # must always start with the target client and never include it again.

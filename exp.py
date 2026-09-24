@@ -197,6 +197,34 @@ def _exp_star(args):
         return None, None, None
 
 
+def hyperparameter_combos(config) -> list:
+    """
+    Cartesian product over GRID_KEYS -- EXCEPT `alpha`, which is irrelevant
+    whenever `prob_shift == 0.0`: perturb_bn_params never perturbs anything
+    when prob=0 (every client is just an unperturbed copy of bn_base), so
+    `alpha`'s value has zero effect on the result in that case -- see
+    perturb_bn_params. Sweeping the full alpha list there anyway would
+    produce `len(alpha) - 1` extra tasks per (n_clients, ess) that are
+    byte-for-byte identical to each other (confirmed empirically: exp() with
+    prob_shift=0 does not even draw any alpha-dependent randomness), wasting
+    compute and, downstream, showing as redundant duplicate columns in the
+    grid plot (Plot_JS.ipynb facets on the DISTINCT (prob_shift, alpha)
+    pairs actually present in df_tot.csv). Only ONE alpha value -- the
+    grid's first -- is used per (n_clients, ess, prob_shift=0.0) combo
+    instead.
+    """
+    combos = []
+    for n_clients, ess, prob_shift in itertools.product(
+        config["n_clients"], config["ess"], config["prob_shift"]
+    ):
+        alpha_values = [config["alpha"][0]] if prob_shift == 0.0 else config["alpha"]
+        for alpha in alpha_values:
+            combos.append(
+                {"n_clients": n_clients, "ess": ess, "prob_shift": prob_shift, "alpha": alpha}
+            )
+    return combos
+
+
 def build_tasks(config, sizes) -> list:
     """
     Flatten every (hyperparameter combination x size x repetition) into a
@@ -211,10 +239,9 @@ def build_tasks(config, sizes) -> list:
     exp() reads everything from its own `config` argument, never from
     shared/global state.
     """
-    grid_values = [config[k] for k in GRID_KEYS]
     return [
-        (dict(config, **dict(zip(GRID_KEYS, combo))), n, rep)
-        for combo in itertools.product(*grid_values)
+        (dict(config, **combo), n, rep)
+        for combo in hyperparameter_combos(config)
         for n in sizes
         for rep in range(config["n_repetitions"])
     ]
@@ -300,7 +327,7 @@ def _log_memory(
     eta_min = (n_total - n_done) / rate / 60 if rate > 0 else float("nan")
 
     print(
-        f"[mem] {n_done}/{n_total} done ({n_failed} failed) | "
+        f"{n_done}/{n_total} done ({n_failed} failed) | "
         f"parent RSS: {parent_rss / 1e9:.2f} GB | "
         f"{n_children} workers RSS (sum): {children_rss / 1e9:.2f} GB | "
         # f"/ PSS sum {children_pss / 1e9:.2f} GB "
@@ -348,9 +375,9 @@ def main():
     tasks = build_tasks(config, sizes)
     _check_unique_task_ids(tasks)
 
-    n_combos = 1
-    for v in (config[k] for k in GRID_KEYS):
-        n_combos *= len(v)
+    # NOT the naive n_clients x ess x prob_shift x alpha product: alpha is
+    # deduplicated away for prob_shift == 0.0 (see hyperparameter_combos).
+    n_combos = len(hyperparameter_combos(config))
     print(
         f"# {n_combos} hyperparameter combinations x {len(sizes)} sizes x "
         f"{config['n_repetitions']} repetitions = {len(tasks)} total tasks "
