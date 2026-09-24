@@ -250,6 +250,30 @@ def _check_unique_task_ids(tasks: list) -> None:
         )
 
 
+def _read_pss_kb(pid: int) -> int:
+    """
+    PSS (Proportional Set Size): each shared page's cost is divided by the
+    number of processes sharing it, unlike RSS, which counts a shared page
+    in FULL for every process that maps it. Summing RSS across many worker
+    processes therefore double- (or N-)counts everything they share (the
+    pyagrum/numpy/Python shared libraries, and copy-on-write pages
+    inherited from fork() that no worker has modified) -- which is exactly
+    why a summed-RSS number can read higher than what htop/free show for
+    the whole system. Summed PSS does not have this problem. Linux-only
+    (/proc/<pid>/smaps_rollup); returns 0 if unavailable (e.g. permission
+    denied in some restricted containers) rather than raising, since this
+    is a diagnostic, not a correctness requirement.
+    """
+    try:
+        with open(f"/proc/{pid}/smaps_rollup") as f:
+            for line in f:
+                if line.startswith("Pss:"):
+                    return int(line.split()[1])
+    except (FileNotFoundError, ProcessLookupError, PermissionError):
+        pass
+    return 0
+
+
 def _log_memory(
     proc: psutil.Process, n_done: int, n_total: int, n_failed: int, t_start: float
 ) -> None:
@@ -260,10 +284,12 @@ def _log_memory(
     parent_rss = proc.memory_info().rss
 
     children_rss = 0
+    children_pss = 0
     n_children = 0
     for c in proc.children(recursive=True):
         try:
             children_rss += c.memory_info().rss
+            children_pss += _read_pss_kb(c.pid) * 1024
             n_children += 1
         except psutil.NoSuchProcess:
             # Child exited between listing and sampling -- harmless, skip it.
@@ -277,7 +303,8 @@ def _log_memory(
         f"[mem] {n_done}/{n_total} done ({n_failed} failed) | "
         f"parent RSS: {parent_rss / 1e9:.2f} GB | "
         f"{n_children} workers RSS (sum): {children_rss / 1e9:.2f} GB | "
-        f"{rate:.2f} tasks/sec | ETA: {eta_min:.1f} min",
+        # f"/ PSS sum {children_pss / 1e9:.2f} GB "
+        f"{rate:.2f} tasks/s | ETA: {eta_min:.1f} min",
         flush=True,
     )
 
@@ -290,6 +317,20 @@ def main():
     # Choose configurationc file
     config = load_config("conf.yaml")
     save_models = config.get("save_models", True)
+    # Each worker is a long-lived process handling MANY tasks over the whole
+    # run (Pool(processes=n_jobs) forks n_jobs workers ONCE, not once per
+    # task). sample_from_cset (src/utils.py), via the `hopsy` MCMC polytope
+    # sampler, leaks memory per call in a way gc.collect() cannot reclaim --
+    # confirmed empirically (isolated to that one function; unaffected by
+    # forcing Python's garbage collector) at ~5.5MB per exp() task, i.e.
+    # unbounded growth over a long run regardless of save_models (this has
+    # nothing to do with archiving models). `maxtasksperchild` makes the
+    # pool retire and fork a fresh replacement worker after it has handled
+    # this many tasks, so the OS reclaims 100% of that worker's memory
+    # (leaked or not) periodically -- the standard fix for a leaky C
+    # extension inside a long-running pool worker, and the only one that
+    # doesn't require fixing the leak inside hopsy/PolyRound itself.
+    max_tasks_per_child = config.get("max_tasks_per_child", 100)
 
     # Create the (single) empty results folder for the whole grid
     res_path = Path(config["res_path"])
@@ -345,7 +386,7 @@ def main():
         csv_f.flush()
 
         ctx = mp.get_context("fork")
-        with ctx.Pool(processes=n_jobs) as pool:
+        with ctx.Pool(processes=n_jobs, maxtasksperchild=max_tasks_per_child) as pool:
             for row, models, task_id in pool.imap_unordered(_exp_star, tasks):
                 if row is None:
                     n_failed += 1
