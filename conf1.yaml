@@ -23,10 +23,7 @@ n_bns: 100
 # Archive every task's CPT snapshots to results/models/<task_id>.pkl (see
 # snapshot_cpts in exp1.py).
 save_models: True
-# Retire and replace each worker process after this many tasks, so the OS
-# reclaims its memory periodically -- works around a native (non-Python,
-# gc.collect() does not help) leak in the `hopsy` MCMC sampler used for the
-# min/mean JSD (~5.5MB/task, confirmed empirically), which otherwise grows
-# unbounded over a long run. Lower = tighter memory bound but more
-# respawn overhead; defaults to 100 if omitted.
+# Retire and replace each worker process after this many tasks: works around
+# a native memory leak (~5.5MB/task) in the `hopsy` MCMC sampler used for the
+# min/mean JSD. Lower = tighter memory bound, more respawn overhead; defaults to 100.
 max_tasks_per_child: 50

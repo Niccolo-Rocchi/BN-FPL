@@ -5,7 +5,7 @@ update rule).
 
 Where exact arithmetic matters, clients are built with fully controlled
 credal sets/counts (bypassing random data generation and, where possible,
-pyagrum's CredalNet/BIF round trip -- see BIF_ATOL below) so expected values
+pyagrum's CredalNet/BIF round trip; see BIF_ATOL below) so expected values
 can be hand-computed and checked with tight tolerances.
 """
 
@@ -30,10 +30,8 @@ def _seed():
     set_seed()
 
 
-# --------------------------------------------------------------------------
 # Helpers: build clients with an exactly-controlled credal set / counts for
 # a single binary root variable "X", without going through data generation.
-# --------------------------------------------------------------------------
 
 
 def _base_bn():
@@ -129,9 +127,7 @@ def _make_client_exact_counts(counts, ess):
     return c
 
 
-# --------------------------------------------------------------------------
 # CN / CN_CPT
-# --------------------------------------------------------------------------
 
 
 def test_cn_cpt_min_max_roundtrip():
@@ -172,10 +168,8 @@ def test_cn_cpt_vertices_within_bounds():
     assert np.allclose(vertices.sum(axis=1), 1.0)
 
 
-# --------------------------------------------------------------------------
 # PriorCPT.compute (via PriorCN.compute_cpt): weighting schemas, vacuous
 # fallback, and the intersection_frac diagnostic.
-# --------------------------------------------------------------------------
 
 
 def test_prior_weighting1_is_simple_average_of_bounds():
@@ -223,10 +217,8 @@ def test_prior_weighting2_excludes_non_overlapping_candidate():
 
 def test_prior_weighting2_no_overlap_falls_back_to_vacuous_row():
     # Regression test for the vacuous-prior bug (used to produce (0,0)).
-    # Whether this case also emits a warning is not checked here -- that's
-    # a pure UX/logging choice (currently silenced in PriorCPT.compute to
-    # avoid spamming stdout during a large grid run), not part of the
-    # behavior this test guards.
+    # Whether this case also emits a warning is not checked here: that's a
+    # pure UX/logging choice, not part of the behavior this test guards.
     target = _make_client_with_cset(*_seg(0.02, 0.08))
     c1 = _make_client_with_cset(*_seg(0.8, 0.9))
     c2 = _make_client_with_cset(*_seg(0.65, 0.78))
@@ -252,8 +244,7 @@ def test_prior_zero_candidates_is_fully_vacuous():
 
 def test_prior_weighting2_single_candidate_respects_intersection_filter():
     # Regression test: the former len(clients)==2 shortcut bypassed the
-    # intersection filter entirely. Whether this also emits a warning is
-    # not checked here -- see the comment in the no-overlap test above.
+    # intersection filter entirely.
     target = _make_client_with_cset(*_seg(0.02, 0.08))
     c1 = _make_client_with_cset(*_seg(0.8, 0.9))  # does not overlap
 
@@ -275,9 +266,7 @@ def test_prior_weighting2_single_candidate_overlapping_returns_its_cset():
     assert np.allclose(prior_max, [[0.5, 0.5]])
 
 
-# --------------------------------------------------------------------------
 # weighting=3: soft, JSD-based proximity to the target's own MLE.
-# --------------------------------------------------------------------------
 
 
 def test_prior_weighting3_matches_hand_computed_maxjsd_weights():
@@ -304,7 +293,7 @@ def test_prior_weighting3_matches_hand_computed_maxjsd_weights():
 def test_prior_weighting3_favors_narrow_close_over_wide_containing():
     # Regression test for the "containment" critique: a wide candidate that
     # merely CONTAINS the target's MLE must not automatically outweigh a
-    # narrow candidate close to it -- unlike a raw intersection-measure
+    # narrow candidate close to it, unlike a raw intersection-measure
     # scheme (mu(K^e cap K^i)), which rewards width per se.
     target = _make_client_with_cset([0.4, 0.4], [0.6, 0.6], mle=[0.5, 0.5])
     c1 = _make_client_with_cset([0.48, 0.48], [0.52, 0.52])  # narrow, close
@@ -337,9 +326,7 @@ def test_prior_weighting3_never_zero_even_when_disjoint():
     assert np.allclose(prior_max, [c1_max])
 
 
-# --------------------------------------------------------------------------
 # PriorCN.compute: network-wide median intersection fraction.
-# --------------------------------------------------------------------------
 
 
 def test_prior_cn_median_over_two_variable_network():
@@ -373,16 +360,14 @@ def test_prior_cn_median_over_two_variable_network():
     assert median == 0.0
 
 
-# --------------------------------------------------------------------------
 # Client.get_cset
-# --------------------------------------------------------------------------
 
 
 def test_get_cset_root_variable_shape():
     # For a root variable (no parents) with parents=None, get_cset falls
     # through to a single-row lookup (get_cpt_index returns 0), so the
-    # result is the 1D row -- not the 2D "all rows" shape used when `var`
-    # has parents (see get_cset's docstring/branching).
+    # result is the 1D row, not the 2D "all rows" shape used when `var`
+    # has parents.
     c = _make_client_with_cset([0.2, 0.3], [0.6, 0.7])
     cpt_min, cpt_max = c.get_cset("X")
     assert cpt_min.shape == (2,)
@@ -432,9 +417,7 @@ def test_get_cset_with_explicit_parent_returns_single_row():
     assert np.allclose(row1_max, [0.6, 0.6])
 
 
-# --------------------------------------------------------------------------
 # Client.mosaic_cn_cpt: the MOSAIC update rule.
-# --------------------------------------------------------------------------
 
 
 def test_mosaic_update_matches_hand_computed_formula():
@@ -508,10 +491,8 @@ def test_mosaic_soundness_mle_in_update_iff_mle_in_prior():
     assert not (np.all(mle >= got_min2[0] - 1e-9) and np.all(mle <= got_max2[0] + 1e-9))
 
 
-# --------------------------------------------------------------------------
 # End-to-end sanity: generate_base_info -> learn_cn -> mosaic_cn, on real
 # (randomly generated) data, tying the whole Client-level flow together.
-# --------------------------------------------------------------------------
 
 
 def test_generate_base_info_and_vacuous_mosaic_matches_local_idm():

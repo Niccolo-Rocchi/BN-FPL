@@ -1,17 +1,16 @@
 """
 Tests for exp1.py: the full-grid local learning & update pipeline. exp2.py
-(the prob_shift-only sweep) reuses exp1.exp()/run_grid() as-is -- see
+(the prob_shift-only sweep) reuses exp1.exp()/run_grid() as-is; see
 test_exp2.py for its own (much smaller) task-building tests; the actual
 per-task computation is only tested here, once.
 
 exp(config, n, rep) is fully self-contained (no worker-global state, so it
-is called directly here with an explicit config -- no pool/initializer
+is called directly here with an explicit config, no pool/initializer
 needed) and returns (row, models, task_id): `row` is the JSD/containment
 summary dict (destined for one line of df_tot.csv), `models` is a dict of
 raw CPT snapshots (destined for its own results/models/<task_id>.pkl file,
-kept for the future global optimization phase -- empty when
-config["save_models"] is False, which conf1.yaml sets for a plain
-local-learning-and-update sweep (exp()'s own fallback, if the key is
+empty when config["save_models"] is False, which conf1.yaml sets for a
+plain local-learning-and-update sweep; exp()'s own fallback, if the key is
 missing entirely, is True), and `task_id` is the (n_clients, ess,
 prob_shift, alpha, size, rep) key both are filed under.
 """
@@ -84,7 +83,7 @@ def test_exp_returns_expected_schema_and_sane_values():
     assert 0.0 <= row["intersection_frac"] <= 1.0
     assert row["mle"] >= 0.0
     # theta_hat^e is always a member of the local IDM credal set, for any
-    # ess -- see test_idm_min_never_exceeds_mle below.
+    # ess; see test_idm_min_never_exceeds_mle below.
     assert row["idm_min"] <= row["mle"] + 1e-9
 
     assert 0.0 <= row["idm_gt_contained"] <= 1.0
@@ -129,26 +128,9 @@ def test_gt_contained_matches_direct_computation():
 
 @pytest.mark.parametrize("ess", [1, 2, 5, 10, 20])
 def test_idm_min_never_exceeds_mle(ess):
-    # Regression test: for every count n_k out of N, IDM's local credal
-    # interval is [n_k/(N+ess), (n_k+ess)/(N+ess)], which always contains
-    # the MLE n_k/N for any ess > 0 (n_k/(N+ess) <= n_k/N always; n_k/N <=
-    # (n_k+ess)/(N+ess) iff n_k <= N, always true) -- so theta_hat^e is
-    # always a valid member of the credal network's strong extension, and
-    # idm_min must never exceed row["mle"].
-    #
-    # Before the fix, idm_min was a pure Monte Carlo estimate (hopsy-
-    # sampled, n_bns draws) of the credal set's minimum JSD -- not exact,
-    # since JSD is convex (not concave) in its second argument, so unlike
-    # the max, the min is not vertex-attained and generally sits at an
-    # interior point. For a WIDE credal set (large ess) in the network's
-    # many-CPT-row joint parameter space, a small sample can systematically
-    # miss the region near the true minimum (which, at prob_shift=0, sits
-    # close to theta_hat^e, itself close to bn_base) -- confirmed
-    # empirically: idm_min > mle at ess=10 with the default n_bns, closing
-    # only as n_bns grows into the thousands. The fix folds row["mle"]
-    # (already computed, zero extra cost) into idm_min as a guaranteed
-    # exact sample, fixing this exactly rather than merely reducing its
-    # probability.
+    # Regression test: IDM's local credal interval always contains the MLE
+    # for any ess > 0, so idm_min must never exceed row["mle"] (previously
+    # a pure Monte Carlo estimate that could miss it for a wide credal set).
     config = dict(BASE_CONFIG, n_clients=2, prob_shift=0.0, ess=ess, n_bns=50)
     for n in (20, 100, 300):
         row, _, _ = exp_mod.exp(config, n, rep=0)
@@ -157,10 +139,8 @@ def test_idm_min_never_exceeds_mle(ess):
 
 def test_exp_models_snapshot_is_well_formed():
     # Each variable's snapshot is self-describing: {"cpt", "parents",
-    # "labels"} (see snapshot_cpts) -- not a bare array -- specifically so a
-    # future reader never has to separately reconstruct a gum.BayesNet (and
-    # risk using cpt.topandas()'s row order by mistake) to know what each
-    # row/column means.
+    # "labels"} (see snapshot_cpts), not a bare array, so a reader never has
+    # to reconstruct a gum.BayesNet to know what each row/column means.
     row, models, task_id = exp_mod.exp(BASE_CONFIG, 50, rep=0)
 
     assert set(models.keys()) == EXPECTED_MODEL_KEYS
@@ -187,18 +167,15 @@ def test_exp_models_snapshot_is_well_formed():
 
 def test_row_fieldnames_matches_row_schema():
     # main() writes df_tot.csv incrementally with csv.DictWriter(fieldnames=
-    # ROW_FIELDNAMES), which raises if a row's keys don't match exactly --
-    # this locks that invariant as a fast, direct test (rather than only
-    # discovering a mismatch mid-run, potentially hours in).
+    # ROW_FIELDNAMES), which raises if a row's keys don't match exactly;
+    # this locks that invariant as a fast, direct test.
     assert set(exp_mod.ROW_FIELDNAMES) == EXPECTED_ROW_KEYS
     assert len(exp_mod.ROW_FIELDNAMES) == len(set(exp_mod.ROW_FIELDNAMES))
 
 
 def test_exp_save_models_false_skips_model_computation():
-    # save_models=False (the default for a plain local-learning-and-update
-    # sweep, see conf1.yaml/conf2.yaml) must skip snapshot_cpts() entirely -- not just
-    # leave `models` unused -- so it also saves the compute, not only the
-    # eventual pickle/RAM. `row` must be entirely unaffected.
+    # save_models=False must skip snapshot_cpts() entirely, not just leave
+    # `models` unused, so it also saves the compute. `row` is unaffected.
     config = dict(BASE_CONFIG, save_models=False)
     row, models, task_id = exp_mod.exp(config, 50, rep=0)
 
@@ -208,7 +185,7 @@ def test_exp_save_models_false_skips_model_computation():
 
 
 def test_exp_save_models_defaults_to_true():
-    # BASE_CONFIG has no "save_models" key -- omitting it must preserve the
+    # BASE_CONFIG has no "save_models" key; omitting it must preserve the
     # old (models-always-saved) behavior, so no other test needs updating.
     row, models, task_id = exp_mod.exp(BASE_CONFIG, 50, rep=0)
     assert set(models.keys()) == EXPECTED_MODEL_KEYS
@@ -231,7 +208,7 @@ def test_model_filename_is_unique_across_a_grid():
 
     assert len(filenames) == len(set(filenames))
     # The filename must be exactly recoverable as the task_id's own fields,
-    # in order -- not e.g. missing a field, which could silently collide.
+    # in order, not e.g. missing a field, which could silently collide.
     for t, fname in zip(task_ids, filenames):
         assert fname == "_".join(str(x) for x in t) + ".pkl"
 
@@ -280,11 +257,8 @@ def test_exp_works_for_any_client_num(client_num):
 
 def test_different_reps_produce_different_data():
     # Regression test: exp() must reseed per (n, rep) task and regenerate the
-    # whole DGP (client perturbations included, not just the sampled data)
-    # for each repetition. Before the fix, forked worker processes inherited
-    # an identical RNG state, so distinct repetitions processed by different
-    # (freshly-forked) workers silently produced byte-for-byte identical
-    # client-0 data -- visible here as an identical "mle" JSD value.
+    # whole DGP for each repetition (before the fix, forked worker processes
+    # inherited an identical RNG state, producing identical "mle" values).
     row0, _, _ = exp_mod.exp(BASE_CONFIG, 40, rep=0)
     row1, _, _ = exp_mod.exp(BASE_CONFIG, 40, rep=1)
 
@@ -373,11 +347,8 @@ def test_build_tasks_covers_every_combination_exactly_once():
 
 def test_hyperparameter_combos_deduplicates_alpha_only_for_prob_shift_zero():
     # alpha is irrelevant when prob_shift == 0.0 (perturb_bn_params never
-    # perturbs anything at prob=0, so no alpha-dependent randomness is even
-    # drawn -- see test_prob_shift_zero_ignores_alpha below): sweeping the
-    # full alpha list there would silently produce len(alpha)-1 redundant,
-    # byte-identical tasks per (n_clients, ess) combination. Non-zero
-    # prob_shift values must still sweep the full alpha list as normal.
+    # perturbs anything at prob=0): sweeping the full alpha list there would
+    # produce redundant, byte-identical tasks per (n_clients, ess) combo.
     config = dict(
         BASE_CONFIG,
         n_clients=[5],
@@ -396,7 +367,7 @@ def test_hyperparameter_combos_deduplicates_alpha_only_for_prob_shift_zero():
     assert sorted(c["alpha"] for c in nonzero_combos) == sorted(config["alpha"])
 
     # build_tasks (and hence main()'s printed combo count) must reflect the
-    # same, deduplicated total -- not the naive n_clients x ess x prob_shift
+    # same, deduplicated total, not the naive n_clients x ess x prob_shift
     # x alpha product.
     tasks = exp_mod.build_tasks(dict(config, n_repetitions=1), sizes=[10])
     assert len(tasks) == len(combos) == 4  # 1 (prob_shift=0) + 3 (prob_shift=0.5)

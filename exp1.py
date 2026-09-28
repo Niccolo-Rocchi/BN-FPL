@@ -20,9 +20,8 @@ from src.utils import (gt_containment_frac, jsd_bn, jsd_credal_stats,
 
 n_jobs = max(1, len(os.sched_getaffinity(0)) - 1)
 
-# All implemented weighting schemas (see PriorCPT.compute) are evaluated in
-# every run, so their JSD curves can be compared on the same plot -- the MLE
-# and IDM (no update) curves are identical across schemas and computed once.
+# All implemented weighting schemas (see PriorCPT.compute) are evaluated
+# every run, so their JSD curves can be compared on the same plot.
 WEIGHTING_SCHEMES = (1, 2, 3)
 
 # Hyperparameters swept as a grid (cartesian product): each is a list in
@@ -30,10 +29,9 @@ WEIGHTING_SCHEMES = (1, 2, 3)
 # n_repetitions x WEIGHTING_SCHEMES) sweep is run per combination.
 GRID_KEYS = ("n_clients", "ess", "prob_shift", "alpha")
 
-# Exact set (and order) of keys every `exp()` call's `row` carries -- fixed
-# by WEIGHTING_SCHEMES/GRID_KEYS above, identical for every task regardless
-# of hyperparameters. Used both as the CSV header (main()) and as a
-# self-consistency check on every row before it is written.
+# Exact set of keys every `exp()` call's `row` carries, fixed by
+# WEIGHTING_SCHEMES/GRID_KEYS above. Used as the CSV header and to check
+# each row's schema before it is written.
 ROW_FIELDNAMES = (
     list(GRID_KEYS)
     + ["size", "rep", "mle", "idm_min", "idm_mean", "idm_max"]
@@ -73,24 +71,13 @@ def init_clients(config, verbose=False) -> list:
 
 def exp(config, n, rep) -> tuple:
     """
-    Fully self-contained: everything needed (including every hyperparameter
-    combination's own config) is passed in as an argument, nothing is read
-    from worker-global state. This is what lets main() freely interleave
-    tasks from DIFFERENT hyperparameter combinations across all workers in
-    a single flat pool, instead of processing one combination at a time.
+    Fully self-contained: everything is read from `config`, nothing from
+    worker-global state, so tasks from different hyperparameter
+    combinations can be freely interleaved across workers.
     """
-    # Each (n, rep) task needs its own independent random stream. The worker
-    # pool uses "fork", so sibling worker processes inherit an IDENTICAL RNG
-    # state at fork time; without reseeding here, several "repetitions"
-    # processed by distinct, freshly-forked workers would silently generate
-    # IDENTICAL data (confirmed empirically: client 0's data was byte-for-
-    # byte identical across repetitions for several sample sizes). The seed
-    # is still fully reproducible given (n, rep) -- deliberately NOT mixed
-    # with the hyperparameter combination, so different combinations use
-    # "matched" randomness for the same (n, rep) (common random numbers),
-    # making cross-combination comparisons a bit less noisy; this has no
-    # bearing on correctness, since each task still reseeds independently
-    # before generating its own data.
+    # Each (n, rep) task needs its own independent random stream: forked
+    # worker processes inherit identical RNG state, so without reseeding
+    # here different repetitions could silently produce identical data.
     task_seed = hash((n, rep)) % (2**32)
     np.random.seed(task_seed)
     gum.initRandom(task_seed)
@@ -98,18 +85,12 @@ def exp(config, n, rep) -> tuple:
     client_num = config["client_num"]
     n_bns = config["n_bns"]
     # Whether to archive CPT snapshots for this task (see `models` below).
-    # Needed only for the future global optimization phase; the models
-    # dominate a task's memory footprint (~90KB vs ~1KB for `row` alone,
-    # measured), so this is off by default for a plain local-learning-and-
-    # update sweep. Read from `config` (not a separate argument) to keep
-    # `exp()`'s signature self-contained, matching every other hyperparameter.
+    # Off by default, since the models dominate a task's memory footprint.
     save_models = config.get("save_models", True)
     bn_base = gum.loadBN(config["bn_base_path"])
 
-    # Generate a fresh data-generating process for this repetition (i.e. new
-    # client perturbations too, not just new sampled data from a DGP fixed
-    # once for the whole sweep) -- cap6_extract.tex's "Reiterations" repeats
-    # the whole "above steps", which includes "Data Generation".
+    # Regenerates the whole data-generating process for this repetition,
+    # not just new sampled data (see cap6_extract.tex's "Reiterations").
     clients = init_clients(config)
 
     # Generate clients' data and learn models
@@ -129,13 +110,9 @@ def exp(config, n, rep) -> tuple:
     row["size"] = n
     row["rep"] = rep
 
-    # Archived models for this task (see snapshot_cpts): the client's exact
-    # MLE, its local IDM credal set (no update), and -- per weighting schema
-    # -- the prior and the resulting MOSAIC-updated credal set. Needed later
-    # for the global optimization phase (cap6_extract.tex), which reads
-    # theta^i in K^{i+}_{X|pi_X} directly from the updated credal sets.
-    # Skipped entirely (not just left unused) when save_models is False, so
-    # disabling it also saves the snapshot_cpts() compute, not just the RAM.
+    # Archived models for this task (see snapshot_cpts): MLE, local IDM
+    # credal set, and per-schema prior and MOSAIC-updated credal set.
+    # Skipped entirely (not just unused) when save_models is False.
     models = {}
 
     # MLE and IDM (no update): identical across weighting schemas, computed once.
@@ -156,26 +133,15 @@ def exp(config, n, rep) -> tuple:
         models["idm_max"] = snapshot_cpts(client_exp.cn.bn_max)
 
     # Empirical check of "Reliability of credal sets" (cap6_extract.tex,
-    # Definition `as:credal`): fraction of individual CPT entries across
-    # the network (see gt_containment_frac) where bn_base's own
-    # (ground-truth) value is actually contained in this credal set. Unlike
-    # theta_hat^e (the MLE, always inside the local IDM credal set for any
-    # ess -- an algebraic fact, not an assumption), containment of the
-    # TRUE, unknown ground truth is a statistical property that is not
-    # guaranteed and can reasonably fail, especially at small sample sizes
-    # -- this measures how often it holds in practice, for IDM and (below)
-    # for each MOSAIC-updated credal set. Computed directly from the live
-    # bn_min/bn_max (not through `models`), so it's always available
-    # regardless of save_models.
+    # `as:credal`): how often bn_base's own value is contained in this
+    # credal set. Computed from the live bn_min/bn_max, not through `models`.
     row["idm_gt_contained"] = gt_containment_frac(
         bn_base, client_exp.cn.bn_min, client_exp.cn.bn_max
     )
 
-    # MOSAIC, once per weighting schema. The network-wide median fraction of
-    # clients intersecting the prior only depends on the target/candidates'
-    # own credal sets (not on the weighting formula), so it's identical
-    # across schemas -- kept from weighting=2, where it's most directly
-    # interpretable (hard intersection cutoff).
+    # MOSAIC, once per weighting schema. The intersection fraction is the
+    # same across schemas (it doesn't depend on the weighting formula);
+    # kept from weighting=2, where it's most directly interpretable.
     intersection_frac = None
     for w in WEIGHTING_SCHEMES:
         client_exp.reset_prior()
@@ -220,19 +186,9 @@ def _exp_star(args):
 
 def hyperparameter_combos(config) -> list:
     """
-    Cartesian product over GRID_KEYS -- EXCEPT `alpha`, which is irrelevant
-    whenever `prob_shift == 0.0`: perturb_bn_params never perturbs anything
-    when prob=0 (every client is just an unperturbed copy of bn_base), so
-    `alpha`'s value has zero effect on the result in that case -- see
-    perturb_bn_params. Sweeping the full alpha list there anyway would
-    produce `len(alpha) - 1` extra tasks per (n_clients, ess) that are
-    byte-for-byte identical to each other (confirmed empirically: exp() with
-    prob_shift=0 does not even draw any alpha-dependent randomness), wasting
-    compute and, downstream, showing as redundant duplicate columns in the
-    grid plot (plot1.ipynb facets on the DISTINCT (prob_shift, alpha)
-    pairs actually present in df_tot.csv). Only ONE alpha value -- the
-    grid's first -- is used per (n_clients, ess, prob_shift=0.0) combo
-    instead.
+    Cartesian product over GRID_KEYS, except `alpha` is deduplicated to a
+    single value whenever `prob_shift == 0.0`: at prob=0 no perturbation
+    happens, so alpha has no effect and sweeping it would only waste compute.
     """
     combos = []
     for n_clients, ess, prob_shift in itertools.product(
@@ -248,17 +204,9 @@ def hyperparameter_combos(config) -> list:
 
 def build_tasks(config, sizes) -> list:
     """
-    Flatten every (hyperparameter combination x size x repetition) into a
-    single task list, `[(combo_config, n, rep), ...]`, so all n_jobs workers
-    stay busy for the WHOLE grid in one pool (see main()). Submitting only
-    n_repetitions tasks at a time (one size, one combination at a time) --
-    the previous design -- left most cores idle whenever n_repetitions <
-    n_jobs (e.g. 2 repetitions on a 15-worker pool: 13 idle, every batch).
-    Each task carries its own fully-resolved hyperparameter combination
-    (`combo_config`), so tasks from different combinations can be freely
-    interleaved across workers, in any order, without cross-contamination:
-    exp() reads everything from its own `config` argument, never from
-    shared/global state.
+    Flattens every (hyperparameter combination x size x repetition) into a
+    single task list, so all n_jobs workers stay busy across the whole
+    grid in one pool. Each task carries its own resolved combination.
     """
     return [
         (dict(config, **combo), n, rep)
@@ -268,27 +216,17 @@ def build_tasks(config, sizes) -> list:
     ]
 
 
-# Filename for one task's archived models, encoding its own task_id (see
-# `exp()`'s return value) so results are stored one-file-per-task instead of
-# a single end-of-run pickle -- see main() for why.
+# Filename for one task's archived models, derived from its own task_id.
+# Results are stored one file per task, not a single end-of-run pickle.
 def _model_filename(task_id: tuple) -> str:
     return "_".join(str(x) for x in task_id) + ".pkl"
 
 
 def _check_unique_task_ids(tasks: list) -> None:
     """
-    task_id = (n_clients, ess, prob_shift, alpha, size, rep) is what names
-    every CSV row and every model file (see run_grid()), so it must be
-    unique across the whole task list. Shared by exp1.py and exp2.py:
-    generic over how `tasks` was built, it only assumes each entry is a
-    (config, n, rep) tuple whose config has every GRID_KEYS key resolved to
-    a plain scalar. For exp1.py's full Cartesian grid, uniqueness holds BY
-    CONSTRUCTION as long as every grid list in conf1.yaml holds distinct
-    values (build_tasks's Cartesian product can't otherwise produce the
-    same combination twice) -- this catches the one way that invariant can
-    break (e.g. an accidental duplicate like `ess: [1, 1]`), which would
-    otherwise silently make two different tasks overwrite the same CSV row
-    / model file.
+    task_id = (n_clients, ess, prob_shift, alpha, size, rep) names every
+    CSV row and model file, so it must be unique across `tasks`. Catches,
+    e.g., an accidental duplicate value in a conf.yaml grid list.
     """
     task_ids = [tuple(cfg[k] for k in GRID_KEYS) + (n, rep) for cfg, n, rep in tasks]
     if len(task_ids) != len(set(task_ids)):
@@ -296,24 +234,16 @@ def _check_unique_task_ids(tasks: list) -> None:
         for t in task_ids:
             (dupes if t in seen else seen).add(t)
         raise AssertionError(
-            "Duplicate task_id(s) in the task list -- check the config file "
+            "Duplicate task_id(s) in the task list; check the config file "
             f"for duplicate values within a single grid hyperparameter list: {dupes}"
         )
 
 
 def _read_pss_kb(pid: int) -> int:
     """
-    PSS (Proportional Set Size): each shared page's cost is divided by the
-    number of processes sharing it, unlike RSS, which counts a shared page
-    in FULL for every process that maps it. Summing RSS across many worker
-    processes therefore double- (or N-)counts everything they share (the
-    pyagrum/numpy/Python shared libraries, and copy-on-write pages
-    inherited from fork() that no worker has modified) -- which is exactly
-    why a summed-RSS number can read higher than what htop/free show for
-    the whole system. Summed PSS does not have this problem. Linux-only
-    (/proc/<pid>/smaps_rollup); returns 0 if unavailable (e.g. permission
-    denied in some restricted containers) rather than raising, since this
-    is a diagnostic, not a correctness requirement.
+    PSS (Proportional Set Size) for one process: unlike RSS, it divides
+    each shared page's cost among the processes sharing it, so summing PSS
+    across workers doesn't overcount shared memory. Returns 0 if unavailable.
     """
     try:
         with open(f"/proc/{pid}/smaps_rollup") as f:
@@ -343,7 +273,7 @@ def _log_memory(
             children_pss += _read_pss_kb(c.pid) * 1024
             n_children += 1
         except psutil.NoSuchProcess:
-            # Child exited between listing and sampling -- harmless, skip it.
+            # Child exited between listing and sampling; harmless, skip it.
             pass
 
     elapsed = time.time() - t_start
@@ -364,41 +294,10 @@ def run_grid(
     tasks: list, res_path: Path, save_models: bool, max_tasks_per_child: int
 ) -> None:
     """
-    Shared, memory-safe execution engine for a flattened task list -- used
-    by both exp1.py's (full 4D grid) and exp2.py's (1D prob_shift sweep)
-    main(), so the actual scheduling/writing logic is maintained in exactly
-    one place. `tasks` is any list of (config, n, rep) tuples, each config
-    holding every GRID_KEYS key resolved to a plain scalar (see
-    _check_unique_task_ids).
-
-    Each worker is a long-lived process handling MANY tasks over the whole
-    run (Pool(processes=n_jobs) forks n_jobs workers ONCE, not once per
-    task). sample_from_cset (src/utils.py), via the `hopsy` MCMC polytope
-    sampler, leaks memory per call in a way gc.collect() cannot reclaim --
-    confirmed empirically (isolated to that one function; unaffected by
-    forcing Python's garbage collector) at ~5.5MB per exp() task, i.e.
-    unbounded growth over a long run regardless of save_models (this has
-    nothing to do with archiving models). `maxtasksperchild` makes the
-    pool retire and fork a fresh replacement worker after it has handled
-    this many tasks, so the OS reclaims 100% of that worker's memory
-    (leaked or not) periodically -- the standard fix for a leaky C
-    extension inside a long-running pool worker, and the only one that
-    doesn't require fixing the leak inside hopsy/PolyRound itself.
-
-    Workers only ever RETURN (row, models, task_id) tuples through the pool
-    -- they never touch the filesystem (see `exp`/`_exp_star`). Every
-    result is written to disk THE MOMENT it arrives here, in this single
-    parent process/thread, instead of being buffered in memory for the
-    whole run: `imap_unordered` yields one result at a time, so there is
-    no concurrent-write risk regardless of how many workers run, and no
-    possibility of two tasks racing on the same file. This replaces the
-    previous design, which held every row AND every task's models in RAM
-    (`rows`/`models_by_task` lists) until the very end -- measured at
-    ~90KB/task in-memory just for `models`, i.e. several GB for a large
-    grid, growing for the run's entire multi-hour duration and never
-    freed. Each row is self-identified by its own hyperparameter/size/rep
-    columns (checked against task_id below), so results always land at the
-    correct place in df_tot.csv independently of completion order.
+    Shared, memory-safe execution engine for a flattened task list, used
+    by both exp1.py's and exp2.py's main(). Writes each result to disk
+    immediately and retires workers periodically (`maxtasksperchild`) to
+    bound a native memory leak in `hopsy`.
     """
     _check_unique_task_ids(tasks)
 
@@ -430,8 +329,7 @@ def run_grid(
                     continue
 
                 # The row must describe exactly the task it was computed
-                # for -- both in WHICH hyperparameters (task_id) and in
-                # HAVING every expected column (no more, no less).
+                # for: matching task_id, with every expected column.
                 row_task_id = tuple(row[k] for k in GRID_KEYS) + (
                     row["size"],
                     row["rep"],
@@ -449,15 +347,13 @@ def run_grid(
 
                 if save_models and models:
                     model_path = models_dir / _model_filename(task_id)
-                    # Append (not replace-suffix) -- filenames already
-                    # contain dots from float hyperparameters (e.g.
-                    # "..._0.5_...pkl"), and with_suffix() would need to
-                    # correctly single out the trailing ".pkl" among those.
+                    # Append, not replace-suffix: filenames already contain
+                    # dots from float hyperparameters, which with_suffix()
+                    # would misparse.
                     tmp_path = model_path.with_name(model_path.name + ".tmp")
                     with open(tmp_path, "wb") as mf:
                         pickle.dump(models, mf)
-                    tmp_path.rename(model_path)  # atomic on POSIX: no reader
-                    # ever observes a partially-written model file.
+                    tmp_path.rename(model_path)  # atomic on POSIX
 
                 if n_written % mem_log_every == 0:
                     _log_memory(proc, n_written, len(tasks), n_failed, t_start)

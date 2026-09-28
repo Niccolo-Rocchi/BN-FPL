@@ -218,11 +218,8 @@ def jsd_bounds_from_samples(B, sampled_bns, target="marginals"):
 
 
 # JSD(bn_base, .) statistics (min, mean, max) over a credal net's strong
-# extension (bn_min, bn_max). `max` is exact (attained at a vertex, since
-# JSD is convex in its second argument -- see cap6_extract.tex's Evaluation
-# section); `min` and `mean` are approximated by sampling `n_bns` BNs from
-# the credal set's interior. Used for both the IDM (no update) and MOSAIC
-# (post-update) curves, for every weighting scheme.
+# extension. `max` is exact (attained at a vertex); `min` and `mean` are
+# approximated by sampling `n_bns` BNs.
 def jsd_credal_stats(bn_base, bn_min, bn_max, n_bns, target="joint") -> dict:
 
     vertices_bns = vertices_cn(bn_min, bn_max, n_bns=None)
@@ -238,22 +235,9 @@ def jsd_credal_stats(bn_base, bn_min, bn_max, n_bns, target="joint") -> dict:
     }
 
 
-# Self-contained, plain-numpy snapshot of every CPT in `bn`, keyed by
-# variable name -- for archiving a model (e.g. exp1.py's per-task pickle)
-# independently of pyagrum, so it can be reloaded later (e.g. for the global
-# optimization phase in cap6_extract.tex) without needing pyagrum objects.
-#
-# Each variable's entry is {"cpt": array, "parents": [...], "labels": [...]}:
-# "cpt"'s row i corresponds to "parents"[i] (a {parent_name: label} dict, or
-# None for a root variable) and its column j to "labels"[j] -- i.e. the row/
-# column meaning travels WITH the array. This is deliberate: cpt.topandas()
-# sorts rows/columns alphabetically by label while the raw array (get_
-# tabular_cpt, used here) follows pyagrum's native declaration order (see
-# get_parent_confs); the two silently disagree for any variable without
-# alphabetically-ordered labels (e.g. every variable in cancer.bif). Storing
-# "parents"/"labels" alongside "cpt" means a future reader never has to
-# separately reconstruct a gum.BayesNet and remember which of the two
-# orderings to use -- verified against get_parent_confs on the real network.
+# Plain-numpy snapshot of every CPT in `bn`. Stores "parents"/"labels"
+# alongside "cpt" so row/column order is never ambiguous: cpt.topandas()
+# sorts labels alphabetically, this follows pyagrum's native order.
 def snapshot_cpts(bn: gum.BayesNet) -> dict:
     return {
         var: {
@@ -265,12 +249,9 @@ def snapshot_cpts(bn: gum.BayesNet) -> dict:
     }
 
 
-# The reference way to read a value back out of a snapshot_cpts() entry
-# ({"cpt", "parents", "labels"}) for one variable: P(X=. | parents), as a
-# 1D array ordered like `entry["labels"]`. Matches purely against the
-# entry's OWN stored "parents" list -- never against a freshly-loaded
-# gum.BayesNet's topandas()/native order -- so this is safe by construction
-# against the row/column-ordering pitfall snapshot_cpts exists to avoid.
+# Reads a value back out of a snapshot_cpts() entry: P(X=. | parents), as a
+# 1D array ordered like `entry["labels"]`. Matches against the entry's own
+# stored "parents" list, never against a freshly-loaded BN's own order.
 def lookup_cpt_row(entry: dict, parents: dict = None) -> np.array:
     if parents is None:
         if entry["parents"] != [None]:
@@ -305,10 +286,8 @@ def get_joint(bn: gum.BayesNet, names: list):
 # Compute the KL between a cset and the ground-truth distribution
 def get_kl_cset(cn: tuple, gt: gum.BayesNet, var, parents):
     """
-    Let X|pi_X be a conditional distribution.
-    The function returns the KL between a credal set in `cn` and the ground-truth (in `gt`).
-    The KL is computed as the maximum KL over the vertices of the cset.
-    `cn` is a tuple of (bn_min, bn_max).
+    Maximum KL between a credal set `cn` (a (bn_min, bn_max) tuple) and the
+    ground-truth `gt`, for X|pi_X, taken over the credal set's vertices.
     """
 
     # Get the ground-truth distribution
@@ -345,9 +324,7 @@ def get_kl_cset(cn: tuple, gt: gum.BayesNet, var, parents):
 # Compute the KL between the learned distribution and the ground-truth one
 def get_kl(bn: gum.BayesNet, gt: gum.BayesNet, var, parents):
     """
-    Let X|pi_X be a conditional distribution.
-    The function returns the KL between a given distribution X|pi_X
-    of a BN (`bn`) and its ground-truth (`gt`).
+    KL between X|pi_X as learned in `bn` and its ground-truth in `gt`.
     """
 
     # Get the ground-truth distribution
@@ -369,15 +346,9 @@ def get_kl(bn: gum.BayesNet, gt: gum.BayesNet, var, parents):
     return kl_sym
 
 
-# Create the BN storing the counts of events. `bn` is only used for its
-# structure (node names, parents, variable labels and the CPTs' row/column
-# order); its CPT *values* are never read, so the result only depends on
-# `data`, unlike a previous version of this function which reconstructed
-# joint counts as (bn's CPT value) * (parent-marginal count) -- correct only
-# when `bn`'s CPT happens to already hold the exact empirical MLE of `data`
-# (true for `Client.learn_bn`'s output, but silently wrong whenever called
-# with any other CPT, e.g. `mle_cn`/`mne_cn`/`ran_cn`/`centroid_cn`/
-# `maxent_cn`, which pass a CN's bn_min).
+# Builds the BN of empirical counts from `data`. `bn` supplies only the
+# structure (names, parents, labels, CPT row/column order); its CPT
+# values are never read, so the result depends only on `data`.
 def get_bn_counts(bn, data):
 
     # Init the BN
@@ -423,14 +394,9 @@ def get_bn_counts(bn, data):
     return bn_counts
 
 
-# Get the exact (unsmoothed) MLE BN from a BN of counts (see get_bn_counts):
-# P(X=x|pi_X) = N[x,pi_X] / N[pi_X], row by row. This is the correct theta_hat
-# to use whenever the true MLE is needed (e.g. as a reference for evaluation,
-# or in the MOSAIC update rule): `learn_bn_params`'s output should NOT be used
-# for this, since its smoothing prior (needed only when the learnt BN is
-# itself used to generate further data, to avoid zero probabilities) biases
-# it away from the true MLE -- a bias that is small in absolute terms but can
-# be large relative to the tiny sample sizes typical of this pipeline.
+# Exact (unsmoothed) MLE BN from a BN of counts: P(X=x|pi_X) = N[x,pi_X] /
+# N[pi_X], row by row. Use this, not `learn_bn_params`'s smoothed output,
+# whenever the true theta_hat is needed.
 def mle_bn_from_counts(bn_counts: gum.BayesNet) -> gum.BayesNet:
 
     bn = gum.BayesNet(bn_counts)
@@ -490,12 +456,9 @@ def get_cpt_shape(cpt) -> tuple:
     return n_rows, var_size
 
 
-# List the parent configurations of `var` in `bn`, in the same row order as
-# get_tabular_cpt(bn.cpt(var)) -- i.e. pyagrum's native order (as used by
-# cpt[:] and .fillWith()), NOT cpt.topandas()'s alphabetically-sorted order.
-# The two differ (silently) for any variable whose labels are not already in
-# alphabetical order -- e.g. every variable in cancer.bif (True/False,
-# low/high, positive/negative). Returns [None] for a root variable.
+# Parent configurations of `var` in `bn`, in pyagrum's native row order
+# (matches get_tabular_cpt, not cpt.topandas()'s alphabetical order).
+# Returns [None] for a root variable.
 def get_parent_confs(bn: gum.BayesNet, var: str) -> list:
 
     cpt = bn.cpt(var)
@@ -760,10 +723,9 @@ def mne_cpt(cpt_min, cpt_max, cpt_counts) -> np.array:
 
 def _neg_loglik(vec, counts) -> float:
     """
-    -sum(counts * log(vec)), with the convention 0*log(0)=0: a category with
-    zero probability contributes 0 if it was never observed (counts=0), but
-    +inf if it was observed (counts>0) -- i.e. that vector is infinitely
-    unlikely, and must never be silently treated as a neutral (0) penalty.
+    -sum(counts * log(vec)), with 0*log(0)=0: an unobserved zero-probability
+    category contributes 0, but an observed one contributes +inf, never a
+    neutral 0 penalty.
     """
     with np.errstate(divide="ignore", invalid="ignore"):
         log_vec = np.full_like(vec, -np.inf, dtype=float)
@@ -966,12 +928,9 @@ def vertices_cset(vec_min, vec_max) -> np.array:
 # Get CPT vertices by combining all the local ones
 def vertices_cpt(cpt_min, cpt_max):
     """
-    For a single CPT (with min/max bounds), this function calculates the local vertices
-    row by row (one row = one parent configuration) and performs
-    the Cartesian product to obtain all combinations of complete CPTs
-    compatible with that variable.
-
-    Returns: 1D array generator (flattened CPT, ready for `fillWith`)
+    Vertices of a single CPT: the Cartesian product of each row's own
+    vertices, one combination per complete, compatible CPT. Yields
+    (flattened CPT, ready for `fillWith`).
     """
     cpt_min_arr = get_tabular_cpt(cpt_min[:])
     cpt_max_arr = get_tabular_cpt(cpt_max[:])
@@ -993,25 +952,18 @@ def vertices_cpt(cpt_min, cpt_max):
 # Get (a subset of) all vertices of a CN's strong extension
 def vertices_cn(bn_min, bn_max, n_bns=None, seed=42, verbose=False):
     """
-    Samples (or generates ALL) the exact BNs obtained by combining the
-    local vertices of each CPT.
-
-    n_bns : int  -> samples `n_bns` random combinations (no guarantee of no repetition
-                    between them, independent sampling index by index)
-            None -> generates the EXHAUSTIVE enumeration of all combinations
-                    (exact superset of the vertices of the strong extension)
+    Exact BNs from combining each CPT's local vertices. `n_bns=None`
+    enumerates ALL combinations; an int samples that many at random.
     """
     dag = gum.BayesNet(bn_min)
 
-    # bn.names() returns a Python set, whose iteration order is randomized
-    # per-process (via PYTHONHASHSEED) -- sort for reproducibility, since
-    # the `seed` argument below is otherwise silently ineffective across
-    # process boundaries (e.g. a multiprocessing worker).
+    # bn.names() is a Python set with per-process randomized order; sort
+    # it so `seed` below is actually reproducible across processes.
     names = sorted(dag.names())
 
     if n_bns is None:
 
-        # --- All combinations ---
+        # All combinations:
         var_cpt_combos = {
             var: [c[0] for c in vertices_cpt(bn_min.cpt(var), bn_max.cpt(var))]
             for var in dag.names()
@@ -1038,7 +990,7 @@ def vertices_cn(bn_min, bn_max, n_bns=None, seed=42, verbose=False):
         return bns
 
     else:
-        # --- Random combinations ---
+        # Random combinations:
         rng = np.random.default_rng(seed)
 
         var_row_vertices = {}
@@ -1075,14 +1027,9 @@ def sample_from_cn(bn_min, bn_max, n_bns: int) -> list:
     # Get the DAG and extreme BNs
     dag = gum.BayesNet(bn_min)
 
-    # bn.names() returns a Python set, whose iteration order is randomized
-    # per-process (via PYTHONHASHSEED); sort so each variable consistently
-    # gets the SAME seed_offset (and hence the same hopsy sampling seed,
-    # via sample_from_cpts's `hash((seed_offset, row))`) regardless of which
-    # process runs this -- otherwise two runs of the identical (bn_min,
-    # bn_max) credal set silently produce different samples whenever run in
-    # separate processes (e.g. multiprocessing workers), even though every
-    # seed involved is nominally deterministic.
+    # bn.names() is a Python set with per-process randomized order; sort
+    # it so each variable gets the same seed_offset, hence the same
+    # sampling seed, regardless of which process runs this.
     names = sorted(dag.names())
 
     # For each variable ...
@@ -1159,10 +1106,8 @@ def sample_from_cpts(cpt_min, cpt_max, n_bns, seed_offset=0) -> list:
 # Sample from a credal set K(x | pi_x), i.e., a constrained polytope.
 def sample_from_cset(vec_min, vec_max, n_bns, seed=42) -> list:
     """
-    We assume a credal set is a polytope in a space of #X parameters, defined by a:
-     - Multi-dimensional rectangle, i.e., inequality constraint Ax <= b, and
-     - Hyperplane (provided all the variables sum up to 1), i.e., equality constraint A_eq x = b_eq.
-    This is true if the CN has been learnt by local IDM, for instance.
+    Samples from a credal set as a polytope: a box constraint Ax <= b plus
+    the simplex hyperplane A_eq x = b_eq. Holds for a CN learned by local IDM.
     """
 
     # Degenerate case
@@ -1243,24 +1188,9 @@ def check_consistency(bn, bn_min, bn_max, verbose=False) -> int:
     return n_issues
 
 
-# Fraction of individual CPT ENTRIES across the whole network -- every
-# (variable, parent-configuration, category) triple, i.e. every single
-# probability value, not one count per row/mechanism -- where `bn_gt`'s own
-# value is within [bn_min, bn_max] at that same entry. Since a credal set's
-# per-row bounds are a box constraint, a whole row/mechanism's distribution
-# is contained in its credal set iff EVERY one of its entries individually
-# satisfies its own [min, max] -- so this entry-level fraction is finer
-# grained than (and equal to 1.0 exactly when) full row-wise containment:
-# a row with e.g. 1 of 2 categories outside its bound contributes partial,
-# not zero, credit here. Used to empirically check Definition "Reliability
-# of credal sets" (cap6_extract.tex, `as:credal`): whether
-# theta^e_{X|pi_X} is actually contained in K^e_{X|pi_X}. Unlike the
-# guarantee that theta_hat^e (the MLE) is always inside the local IDM
-# credal set for any ess (a fact, provable algebraically -- see exp1.py),
-# containment of the true, unknown ground-truth parameters is NOT
-# guaranteed in general and is exactly what this function measures
-# empirically, for IDM's own local credal set and for each MOSAIC-updated
-# one alike.
+# Fraction of individual CPT entries (variable, parent-config, category)
+# where `bn_gt`'s own value is within [bn_min, bn_max]. Empirically checks
+# Definition "Reliability of credal sets" (cap6_extract.tex, `as:credal`).
 def gt_containment_frac(
     bn_gt: gum.BayesNet, bn_min: gum.BayesNet, bn_max: gum.BayesNet
 ) -> float:

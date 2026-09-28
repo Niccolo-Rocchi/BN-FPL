@@ -1,15 +1,7 @@
 """
-Pipeline 2: sweeps ONLY prob_shift (n_clients/ess/alpha/sample-size are each
-fixed to a single scalar value, set in conf2.yaml) to compare the three
-MOSAIC weighting schemas as distribution shift grows -- see plot2.ipynb.
-
-Reuses exp1.py's exp()/run_grid() as-is: identical computation and
-identical safe, memory-bounded parallel-execution/incremental-write engine
-(see run_grid()'s docstring in exp1.py for the full rationale) as the full
-grid pipeline. Only the task-building logic differs here (a 1D sweep over
-prob_shift x repetitions, instead of exp1.py's 4D hyperparameter grid) --
-keeping exp() itself in exactly one place avoids the two pipelines ever
-silently computing something slightly different from each other.
+Sweeps ONLY prob_shift (n_clients/ess/alpha/size fixed, see conf2.yaml)
+to compare the three weighting schemas as shift grows. Reuses exp1.py's
+exp()/run_grid() as-is; only task-building differs.
 """
 from src.config import load_config, set_seed
 

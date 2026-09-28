@@ -1,8 +1,7 @@
 """
 Tests for exp2.py: the prob_shift-only sweep. exp2.py reuses exp1.exp()/
-run_grid() as-is (see exp1.py) -- only build_tasks() is specific to this
-pipeline, so that's what's tested here; the per-task computation itself is
-already covered by test_exp1.py.
+run_grid() as-is, so only build_tasks() is specific to this pipeline and
+tested here; the per-task computation itself is covered by test_exp1.py.
 """
 import pytest
 
@@ -38,7 +37,7 @@ def test_build_tasks_sweeps_only_prob_shift():
     seen = set()
     for cfg, n, rep in tasks:
         # Every non-prob_shift hyperparameter is the SAME fixed scalar for
-        # every task -- unlike exp1.py's grid, nothing else varies here.
+        # every task; unlike exp1.py's grid, nothing else varies here.
         assert cfg["n_clients"] == BASE_CONFIG["n_clients"]
         assert cfg["ess"] == BASE_CONFIG["ess"]
         assert cfg["alpha"] == BASE_CONFIG["alpha"]
@@ -65,9 +64,8 @@ def test_build_tasks_output_is_accepted_by_check_unique_task_ids():
 
 
 def test_build_tasks_tasks_run_through_exp1_exp_without_error():
-    # Smoke test: exp2's tasks are directly consumable by exp1.exp() (the
-    # shared computation) -- only build_tasks() differs between the two
-    # pipelines, everything downstream of it is identical code.
+    # Smoke test: exp2's tasks are directly consumable by exp1.exp(); only
+    # build_tasks() differs between the two pipelines.
     tasks = exp2.build_tasks(BASE_CONFIG)
     cfg, n, rep = tasks[0]
     row, models, task_id = exp1.exp(cfg, n, rep)

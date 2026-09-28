@@ -10,6 +10,11 @@ from src.config import get_cur_dir, safe_assert, set_seed
 
 
 def generate_naivebayes(config):
+    """
+    Generates `n_models` naive-Bayes-structured ground-truth BNs, each with
+    its own sampled population and, per sample, a fresh pool/rpop
+    membership split saved as CSV columns.
+    """
 
     # Set paths
     cur_dir = get_cur_dir(config)
@@ -75,6 +80,11 @@ def generate_naivebayes(config):
 
 
 def generate_randombn(config):
+    """
+    Generates a ground-truth BN of random structure for each (n_nodes,
+    edge_ratio) combination in the config, each with its own sampled
+    population and pool/rpop membership splits saved as CSV columns.
+    """
 
     # Set paths
     cur_dir = get_cur_dir(config)
@@ -134,8 +144,11 @@ def generate_randombn(config):
         gpop.to_csv(f"{data_path}/exp{i}.csv", index=False)
 
 
-# Generate unique data points from a given BN
 def generate_unique(bn: gum.BayesNet, n_samples: int) -> pd.DataFrame:
+    """
+    Draws samples from `bn`, resampling as needed, until `n_samples`
+    unique rows are collected; raises if this takes too many iterations.
+    """
 
     # Generate data
     data_gen = gum.BNDatabaseGenerator(bn)

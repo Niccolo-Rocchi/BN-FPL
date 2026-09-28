@@ -181,31 +181,10 @@ class PriorCPT(CN_CPT):
 
     def compute(self, weighting: int) -> tuple:
         """
-        Compute a convex combination of prior clients' CPTs, using weighting
-        scheme `weighting` (see Table `weight_schemas` in cap6_extract.tex):
-
-          1 = equal contributions, no filtering (#1: w_i propto 1)
-          2 = equal contributions, restricted to candidates whose credal set
-              intersects the target's -- a hard, boolean cutoff (#4:
-              w_i propto I(K^e cap K^i))
-          3 = equal contributions, weighted by proximity to the target's own
-              MLE theta_hat^e via JSD -- a soft cutoff that never assigns
-              zero weight (replaces #5, w_i propto mu(K^e cap K^i), which
-              collapses to 0 on empty intersection and, more importantly,
-              rewards wide/imprecise candidates simply because they overlap
-              more in absolute terms). For each candidate i:
-                  d_i = max_{v in vertices(K^i)} JSD(theta_hat^e, v)
-              attained at a vertex of K^i since JSD(theta_hat^e, .) is convex
-              (Lin 1991). Since JSD is bounded by ln(2), w_i propto ln(2)-d_i
-              is always strictly positive in practice, and correctly favors
-              candidates that are both close to theta_hat^e AND precise
-              (narrow K^i), instead of conflating overlap with imprecision.
-
-        Rows (parent configurations) for which no candidate client contributes
-        to the prior -- either because there are no candidate clients at all,
-        or because weighting=2 and none of them intersects `self` -- are left
-        vacuous, i.e. the prior is [0, 1] there (Eq. `s_oper`, S(\\emptyset) =
-        \\Delta_s), meaning no update takes place for that row.
+        Convex combination of prior clients' CPTs; `weighting` selects W-1
+        (1, equal), W-2 (2, hard intersection cutoff), or W-3 (3, soft
+        JSD-based), see Table `tab:weight_schemas` in cap6_extract.tex. A
+        row with no contributing candidate is left vacuous ([0, 1]).
         """
 
         self.weighting = weighting
@@ -335,10 +314,9 @@ class PriorCN(CN):
 
         return self.cpts[var].intersection_frac
 
-    # Compute all prior CPTs. Returns the median (over all variables and parent
-    # configurations in the network) fraction of candidate clients whose credal
-    # set intersects the target client's one -- a diagnostic of how much genuine
-    # overlap is available across the whole network, regardless of `weighting`.
+    # Computes every prior CPT, then returns the median (across variables
+    # and parent configurations) fraction of candidate clients whose credal
+    # set intersects the target's, regardless of `weighting`.
     def compute(self, clients_list: list, weighting: int) -> float:
 
         fracs = []
@@ -435,10 +413,8 @@ class Client:
         """
         self.check(["data", "bn"])
         self.bn_counts = get_bn_counts(self.bn, self.data)
-        # The exact (unsmoothed) MLE, kept separate from `self.bn` -- see
-        # `mle_bn_from_counts`. Use this, not `self.bn`, whenever the true
-        # theta_hat is needed (evaluation/reference curves, the MOSAIC
-        # update rule).
+        # Exact (unsmoothed) MLE, kept separate from `self.bn`. Use this,
+        # not `self.bn`, whenever the true theta_hat is needed.
         self.bn_mle = mle_bn_from_counts(self.bn_counts)
         cn = gum.CredalNet(self.bn_counts)
 
@@ -477,13 +453,9 @@ class Client:
 
         prior_cpt_min, prior_cpt_max = self.prior_cn.cpt(var)
 
-        # The exact (unsmoothed) empirical MLE (`self.bn_mle`, see
-        # `mle_bn_from_counts`), NOT `self.bn` (learned with a small smoothing
-        # prior, see `learn_bn_params`). This must match, term by term, the
-        # N[x|pi_X]/N[pi_X] used by `idmLearning` for the update rule to
-        # satisfy K^{e+} = K^e under a vacuous prior (see the vacuous-prior
-        # remark in cap6_extract.tex, Sec. "Local Learning & Update") --
-        # `self.bn`'s smoothing would introduce a small but non-zero mismatch.
+        # Uses the exact MLE (`self.bn_mle`), not the smoothed `self.bn`: it
+        # must match `idmLearning`'s own counts exactly for K^{e+} = K^e
+        # under a vacuous prior.
         cpt_mle = get_tabular_cpt(self.bn_mle.cpt(var))
         cpt_counts = get_tabular_cpt(self.bn_counts.cpt(var))
         ess = self.ess

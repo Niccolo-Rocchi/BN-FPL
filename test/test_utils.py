@@ -48,21 +48,13 @@ def bn_with_parent():
 
 @pytest.fixture
 def bn_nonalpha():
-    # The real network used by exp1.py/exp2.py. Its labels are deliberately NOT in
-    # alphabetical order for any variable (True/False, low/high,
-    # positive/negative) -- this is the regression fixture for the
-    # topandas()-vs-raw-array-order mismatch: cpt.topandas() sorts rows and
-    # columns alphabetically by label, while cpt[:] (get_tabular_cpt) and
-    # .fillWith() follow pyagrum's native declaration order. bn_with_parent
-    # above (fastBN's auto-generated "0","1",... labels) can NOT catch this
-    # class of bug, since declaration order there already happens to be
-    # alphabetical.
+    # The real network used by exp1.py/exp2.py; unlike bn_with_parent, its
+    # labels aren't alphabetically ordered, so it catches the
+    # topandas()-vs-native-declaration-order mismatch bn_with_parent cannot.
     return gum.loadBN("cancer.bif")
 
 
-# --------------------------------------------------------------------------
 # CPT shape / indexing helpers
-# --------------------------------------------------------------------------
 
 
 def test_get_tabular_cpt_shapes(bn_with_parent):
@@ -93,13 +85,11 @@ def test_get_cpt_index_matches_row_order(bn_with_parent):
 
 
 def test_get_cpt_index_matches_raw_array_nonalpha_labels(bn_nonalpha):
-    # Regression test: for a variable whose labels are NOT alphabetically
-    # ordered (P: low,high; S/C/D/X: True,False -- every variable in
-    # cancer.bif), get_cpt_index's row number must index correctly into
-    # get_tabular_cpt's array, which follows pyagrum's native (declaration)
-    # order -- NOT cpt.topandas()'s alphabetically-sorted order.
+    # Regression test: for non-alphabetically-ordered labels, get_cpt_index's
+    # row number must index correctly into get_tabular_cpt's array, which
+    # follows pyagrum's native order, not topandas()'s alphabetical sort.
     bn = bn_nonalpha
-    cpt_min = get_tabular_cpt(bn.cpt("C"))  # C | P, S -- 2 parents, 4 rows
+    cpt_min = get_tabular_cpt(bn.cpt("C"))  # C | P, S: 2 parents, 4 rows
     for i, parents in enumerate(get_parent_confs(bn, "C")):
         idx = get_cpt_index(bn, "C", parents)
         assert idx == i
@@ -118,9 +108,7 @@ def test_get_cpt_index_invalid_parent_raises(bn_with_parent):
         get_cpt_index(bn_with_parent, "B", {"A": 99})
 
 
-# --------------------------------------------------------------------------
 # vertices_cset / check_intersection
-# --------------------------------------------------------------------------
 
 
 def test_vertices_cset_within_bounds_and_valid_distributions():
@@ -182,9 +170,7 @@ def test_check_intersection_degenerate_credal_sets():
     assert check_intersection(v_point, v_far) is False
 
 
-# --------------------------------------------------------------------------
 # vac_cn
-# --------------------------------------------------------------------------
 
 
 def test_vac_cn_is_min0_max1(bn_with_parent):
@@ -195,9 +181,7 @@ def test_vac_cn_is_min0_max1(bn_with_parent):
         assert np.allclose(get_tabular_cpt(bn_max.cpt(var)), 1.0)
 
 
-# --------------------------------------------------------------------------
 # perturb_bn_params
-# --------------------------------------------------------------------------
 
 
 def test_perturb_bn_params_prob0_leaves_bn_unchanged(bn_with_parent):
@@ -281,10 +265,8 @@ def test_perturb_bn_params_handles_exact_zero_entry():
     assert np.all(cpt_new >= 0)
 
 
-# --------------------------------------------------------------------------
-# resample_bn_params (not wired into exp1.py/exp2.py, kept as an alternative shift
-# generator -- tested per explicit request)
-# --------------------------------------------------------------------------
+# resample_bn_params (not wired into exp1.py/exp2.py, kept as an alternative
+# shift generator, tested per explicit request)
 
 
 def test_resample_bn_params_mask_and_validity(bn_with_parent):
@@ -300,10 +282,8 @@ def test_resample_bn_params_mask_and_validity(bn_with_parent):
         assert np.array_equal(row_unchanged, row_mask)
 
 
-# --------------------------------------------------------------------------
 # get_bn_counts: verify the indirect (MLE-times-parent-marginal) count
 # recovery exactly matches direct joint counting from the raw data.
-# --------------------------------------------------------------------------
 
 
 def test_get_bn_counts_matches_direct_counting(bn_with_parent):
@@ -355,9 +335,9 @@ def test_get_bn_counts_total_equals_sample_size(bn_with_parent):
 
 
 def test_get_bn_counts_matches_direct_counting_nonalpha_labels(bn_nonalpha):
-    # Regression test on the real cancer.bif network (non-alphabetical
-    # labels for every variable) -- get_bn_counts must assign counts to the
-    # correct physical row/column, not the topandas()-sorted one.
+    # Regression test on the real cancer.bif network: get_bn_counts must
+    # assign counts to the correct physical row/column, not the
+    # topandas()-sorted one.
     bn = bn_nonalpha
     gen = gum.BNDatabaseGenerator(bn)
     gen.drawSamples(500)
@@ -379,10 +359,8 @@ def test_get_bn_counts_matches_direct_counting_nonalpha_labels(bn_nonalpha):
                 assert got_counts[row, col] == direct, (var, parents, lab)
 
 
-# --------------------------------------------------------------------------
 # mle_bn_from_counts: the exact (unsmoothed) MLE, as opposed to
 # learn_bn_params's smoothed output.
-# --------------------------------------------------------------------------
 
 
 def test_mle_bn_from_counts_matches_exact_ratio(bn_with_parent):
@@ -442,11 +420,9 @@ def test_mle_bn_from_counts_defaults_to_uniform_when_unobserved():
     assert np.allclose(got_y[1], [2 / 3, 0.0, 1 / 3])
 
 
-# --------------------------------------------------------------------------
 # learn_bn_params: sanity (converges to the generating distribution, given
 # enough data; with only the 1e-6 smoothing prior the deviation must be
 # tiny).
-# --------------------------------------------------------------------------
 
 
 def test_learn_bn_params_close_to_ground_truth_at_large_n():
@@ -461,9 +437,7 @@ def test_learn_bn_params_close_to_ground_truth_at_large_n():
     assert np.allclose(got, [0.3, 0.7], atol=0.02)
 
 
-# --------------------------------------------------------------------------
 # mle_cset / mle_cpt / mle_cn
-# --------------------------------------------------------------------------
 
 
 def _reference_mle(vec_min, vec_max, counts):
@@ -510,12 +484,9 @@ def test_mle_cn_is_consistent_with_credal_net(bn_with_parent):
 
 
 def test_mle_cpt_row_alignment_nonalpha_labels(bn_nonalpha):
-    # Regression test (deterministic): mle_cpt used to read cpt_min/
-    # cpt_max/cpt_counts via cpt.topandas() (alphabetically-sorted rows),
-    # so its *returned* row order followed that sort -- silently wrong once
-    # mle_cn later writes it back via .fillWith() (native-order rows).
-    # Counts are chosen to be clearly row-distinguishable (each row favors
-    # a different category), so any row permutation is caught exactly.
+    # Regression test (deterministic): mle_cpt used to read via
+    # cpt.topandas() (alphabetically-sorted rows), silently wrong once
+    # mle_cn writes it back via .fillWith() (native-order rows).
     from src.utils import mle_cpt
 
     bn = bn_nonalpha  # cancer.bif
@@ -541,12 +512,9 @@ def test_mle_cpt_row_alignment_nonalpha_labels(bn_nonalpha):
     assert np.allclose(result, expected, atol=1e-3)  # cvxpy solver tolerance
 
 
-# --------------------------------------------------------------------------
 # mne_cset / mne_cpt / mne_cn: worst-case (minimum likelihood) vertex.
-# Regression test for the log(0)-handling bug (a vertex assigning zero
-# probability to an observed category must be recognized as infinitely
-# unlikely, not neutral).
-# --------------------------------------------------------------------------
+# Regression test for the log(0)-handling bug: a vertex assigning zero
+# probability to an observed category must be recognized as infinitely unlikely.
 
 
 def test_mne_cset_picks_true_worst_case_vertex_with_zero_probability():
@@ -590,9 +558,7 @@ def test_mne_cn_is_consistent_with_credal_net(bn_with_parent):
     assert check_consistency(mne_bn, bn_min, bn_max) == 0
 
 
-# --------------------------------------------------------------------------
 # ran_cset / ran_cn: samples must lie inside the credal set.
-# --------------------------------------------------------------------------
 
 
 def test_ran_cset_samples_are_inside_credal_set():
@@ -621,9 +587,7 @@ def test_ran_cn_is_consistent_with_credal_net(bn_with_parent):
         assert check_consistency(ran_bn, bn_min, bn_max) == 0
 
 
-# --------------------------------------------------------------------------
 # centroid_cset / centroid_cn
-# --------------------------------------------------------------------------
 
 
 def test_centroid_cset_binary_known_case():
@@ -650,10 +614,8 @@ def test_centroid_cn_is_consistent_with_credal_net(bn_with_parent):
     assert check_consistency(centroid_bn, bn_min, bn_max) == 0
 
 
-# --------------------------------------------------------------------------
 # maxent_cset / maxent_cn: cross-checked against an independent cvxpy
 # maximum-entropy solver.
-# --------------------------------------------------------------------------
 
 
 def _reference_maxent(vec_min, vec_max):
@@ -695,9 +657,7 @@ def test_maxent_cn_is_consistent_with_credal_net(bn_with_parent):
     assert check_consistency(maxent_bn, bn_min, bn_max) == 0
 
 
-# --------------------------------------------------------------------------
 # jsd: symmetry, bounds, and identity.
-# --------------------------------------------------------------------------
 
 
 def test_jsd_identity_is_zero():
@@ -716,12 +676,9 @@ def test_jsd_is_bounded_in_0_1():
     assert 0.0 <= d <= 1.0 + 1e-9
 
 
-# --------------------------------------------------------------------------
 # gt_containment_frac: fraction of (variable, parent-config) mechanisms
-# where a ground-truth BN's own CPT is componentwise within [bn_min, bn_max]
-# -- the empirical check for "Reliability of credal sets"
-# (cap6_extract.tex, `as:credal`).
-# --------------------------------------------------------------------------
+# where a ground-truth BN's own CPT is componentwise within [bn_min, bn_max],
+# the empirical check for "Reliability of credal sets" (cap6_extract.tex).
 
 
 def test_gt_containment_frac_is_1_when_gt_equals_bounds():
@@ -756,10 +713,7 @@ def test_gt_containment_frac_is_0_when_entirely_outside():
 def test_gt_containment_frac_is_per_entry_not_per_row():
     # A single row with only ONE of its 2 categories outside its bound
     # contributes partial (not zero) credit: containment is counted per
-    # CPT entry (variable, parent-config, category), not per whole row --
-    # see gt_containment_frac's docstring for why this is the mathematically
-    # meaningful granularity (a row is fully contained iff ALL its entries
-    # are), not an approximation.
+    # CPT entry (variable, parent-config, category), not per whole row.
     bn = gum.fastBN("A[2]")
     bn.cpt("A").fillWith([0.9, 0.1])
     bn_min = gum.BayesNet(bn)
@@ -772,7 +726,7 @@ def test_gt_containment_frac_is_per_entry_not_per_row():
 def test_gt_containment_frac_counts_per_variable_correctly():
     # Two (unconnected) root variables, each with 2 entries: A's row (both
     # entries outside) contributes 0/2, B's row (both entries inside)
-    # contributes 2/2 -- overall 2/4.
+    # contributes 2/2, overall 2/4.
     bn = gum.fastBN("A[2];B[2]")
     bn.cpt("A").fillWith([0.9, 0.1])
     bn.cpt("B").fillWith([0.5, 0.5])
@@ -800,10 +754,8 @@ def test_gt_containment_frac_uses_native_row_order_on_nonalpha_network(bn_nonalp
     assert gt_containment_frac(bn_nonalpha, bn_min, bn_max) == 1.0
 
 
-# --------------------------------------------------------------------------
 # snapshot_cpts: plain-numpy archival of a BN's CPTs (exp1.py's/exp2.py's
 # per-task results/models/<task_id>.pkl files).
-# --------------------------------------------------------------------------
 
 
 def test_snapshot_cpts_matches_get_tabular_cpt(bn_with_parent):
@@ -831,12 +783,9 @@ def test_snapshot_cpts_is_independent_copy(bn_with_parent):
 
 
 def test_snapshot_cpts_row_column_labels_match_ground_truth_nonalpha(bn_nonalpha):
-    # Regression test on the real cancer.bif network (non-alphabetical
-    # labels for every variable): the saved "parents"/"labels" metadata must
-    # let a reader reconstruct P(X=x|pi_X) correctly, WITHOUT needing to
-    # separately call get_parent_confs (or, worse, cpt.topandas(), which
-    # would silently scramble both rows and columns here -- see the
-    # topandas-vs-raw-array investigation).
+    # Regression test on the real cancer.bif network: the saved
+    # "parents"/"labels" metadata must let a reader reconstruct
+    # P(X=x|pi_X) correctly, without falling back to cpt.topandas().
     bn = bn_nonalpha
     snap = snapshot_cpts(bn)
 
@@ -860,14 +809,9 @@ def test_snapshot_cpts_row_column_labels_match_ground_truth_nonalpha(bn_nonalpha
             )
 
 
-# --------------------------------------------------------------------------
 # lookup_cpt_row: the reference way to read a value back out of a
-# snapshot_cpts() entry -- this is the actual "upload"/reload path future
-# code (and the plot1.ipynb demo cell) is expected to use, so it gets its
-# own tests, on a fixed network, on genuinely random networks (random
-# structure, not just a fixed one), and on the real Cancer network with
-# hand-verified ground truth.
-# --------------------------------------------------------------------------
+# snapshot_cpts() entry, tested on a fixed network, on genuinely random
+# networks, and on the real Cancer network with hand-verified ground truth.
 
 
 def test_lookup_cpt_row_root_variable(bn_with_parent):
@@ -911,9 +855,8 @@ def test_lookup_cpt_row_on_random_networks():
 
 
 def test_lookup_cpt_row_matches_ground_truth_on_cancer_network(bn_nonalpha):
-    # The critical case: real cancer.bif, non-alphabetical labels for every
-    # variable -- exactly where a topandas()-based reader would silently
-    # scramble rows/columns.
+    # The critical case: real cancer.bif, exactly where a topandas()-based
+    # reader would silently scramble rows/columns.
     bn = bn_nonalpha
     snap = snapshot_cpts(bn)
 
@@ -932,13 +875,9 @@ def test_lookup_cpt_row_matches_ground_truth_on_cancer_network(bn_nonalpha):
     assert np.allclose(lookup_cpt_row(snap["S"]), [0.3, 0.7])
 
 
-# --------------------------------------------------------------------------
-# Full round trip: snapshot -> pickle.dumps -> pickle.loads -> lookup_cpt_row
-# (the exact path exp1.py's/exp2.py's per-task pickle files / a future "upload" consumer go
-# through), cross-checked against directly querying the SAME live BN --
-# both on the real Cancer network (with a genuine, non-trivial parameter
-# perturbation, not hand-typed "nice" numbers) and on random networks.
-# --------------------------------------------------------------------------
+# Full round trip: snapshot -> pickle.dumps -> pickle.loads -> lookup_cpt_row,
+# cross-checked against directly querying the same live BN, both on the real
+# Cancer network (with a genuine parameter perturbation) and on random networks.
 
 
 def test_snapshot_pickle_roundtrip_matches_live_model_on_cancer_network():

@@ -1,7 +1,7 @@
 ## Configuration file for exp2.py: sweeps ONLY prob_shift, to compare the
 ## 3 weighting schemas as distribution shift grows. Every other
 ## hyperparameter is a single fixed scalar (NOT a list, unlike conf1.yaml).
-## Placeholder values below -- tune freely, nothing else needs to change.
+## Placeholder values below: tune freely, nothing else needs to change.
 
 prob_shift: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]  # the swept dimension
 
