@@ -25,7 +25,7 @@ n_jobs = max(1, len(os.sched_getaffinity(0)) - 1)
 WEIGHTING_SCHEMES = (1, 2, 3)
 
 # Hyperparameters swept as a grid (cartesian product): each is a list in
-# conf1.yaml, even when it holds a single value. One full (s_sizes x
+# conf.yaml, even when it holds a single value. One full (s_sizes x
 # n_repetitions x WEIGHTING_SCHEMES) sweep is run per combination.
 GRID_KEYS = ("n_clients", "ess", "prob_shift", "alpha")
 
@@ -291,13 +291,22 @@ def _log_memory(
 
 
 def run_grid(
-    tasks: list, res_path: Path, save_models: bool, max_tasks_per_child: int
+    tasks: list,
+    res_path: Path,
+    save_models: bool,
+    max_tasks_per_child: int,
+    row_fieldnames: tuple = ROW_FIELDNAMES,
+    task_fn=_exp_star,
 ) -> None:
     """
-    Shared, memory-safe execution engine for a flattened task list, used
-    by both exp1.py's and exp2.py's main(). Writes each result to disk
-    immediately and retires workers periodically (`maxtasksperchild`) to
-    bound a native memory leak in `hopsy`.
+    Shared, memory-safe execution engine for a flattened task list. Writes
+    each result to disk immediately and retires workers periodically
+    (`maxtasksperchild`) to bound a native memory leak in `hopsy`.
+
+    `row_fieldnames`/`task_fn` default to this module's own (local
+    learning & update phase); exp_global.py (global optimization phase)
+    reuses this engine unchanged by passing its own CSV schema and
+    per-task worker instead.
     """
     _check_unique_task_ids(tasks)
 
@@ -317,13 +326,13 @@ def run_grid(
     t_start = time.time()
 
     with open(csv_path, "w", newline="") as csv_f:
-        writer = csv.DictWriter(csv_f, fieldnames=ROW_FIELDNAMES)
+        writer = csv.DictWriter(csv_f, fieldnames=row_fieldnames)
         writer.writeheader()
         csv_f.flush()
 
         ctx = mp.get_context("fork")
         with ctx.Pool(processes=n_jobs, maxtasksperchild=max_tasks_per_child) as pool:
-            for row, models, task_id in pool.imap_unordered(_exp_star, tasks):
+            for row, models, task_id in pool.imap_unordered(task_fn, tasks):
                 if row is None:
                     n_failed += 1
                     continue
@@ -335,8 +344,8 @@ def run_grid(
                     row["rep"],
                 )
                 assert row_task_id == task_id, (row_task_id, task_id)
-                assert set(row.keys()) == set(ROW_FIELDNAMES), set(row.keys()) ^ set(
-                    ROW_FIELDNAMES
+                assert set(row.keys()) == set(row_fieldnames), set(row.keys()) ^ set(
+                    row_fieldnames
                 )
 
                 writer.writerow(row)
@@ -374,7 +383,7 @@ def main():
     set_seed()
 
     # Choose configuration file
-    config = load_config("conf1.yaml")
+    config = load_config("conf.yaml")
     save_models = config.get("save_models", True)
     max_tasks_per_child = config.get("max_tasks_per_child", 100)
 

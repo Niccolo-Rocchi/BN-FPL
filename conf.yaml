@@ -1,5 +1,5 @@
-## Configuration file for exp1.py (full n_clients x ess x prob_shift x alpha
-## x sample-size grid). See conf2.yaml for the prob_shift-only sweep.
+## Configuration file for exp.py (full n_clients x ess x prob_shift x alpha
+## x sample-size grid): the local learning & update phase.
 
 # Grid hyperparameters: each is a list, swept as a cartesian product (one
 # full sweep over s_sizes x n_repetitions x weighting schemas per
@@ -14,14 +14,14 @@ s_sizes:
   min: 5
   max: 510
   step: 5
-# All 3 weighting schemas (see exp1.py's WEIGHTING_SCHEMES / PriorCPT.compute)
+# All 3 weighting schemas (see exp.py's WEIGHTING_SCHEMES / PriorCPT.compute)
 # are computed in every run, so there is no `weighting` hyperparameter here.
-res_path: results1
+res_path: results
 bn_base_path: ./cancer.bif
 n_repetitions: 50
 n_bns: 100
 # Archive every task's CPT snapshots to results/models/<task_id>.pkl (see
-# snapshot_cpts in exp1.py).
+# snapshot_cpts in exp.py).
 save_models: True
 # Retire and replace each worker process after this many tasks: works around
 # a native memory leak (~5.5MB/task) in the `hopsy` MCMC sampler used for the
