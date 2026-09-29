@@ -1,8 +1,8 @@
 """
 Tests for src/utils.py.
 
-Covers both the functions exercised by the current `exp1.py`/`exp2.py`
-local learning & update pipelines (vertices_cset, check_intersection,
+Covers both the functions exercised by the current `exp.py`
+local learning & update pipeline (vertices_cset, check_intersection,
 get_bn_counts, perturb_bn_params, get_cpt_index/shape/tabular,
 get_min_max_bns, jsd_credal_stats, gt_containment_frac) and the broader
 utility library (mle_*, mne_*, ran_*, centroid_*, maxent_*,
@@ -19,7 +19,8 @@ import pytest
 
 from src.config import set_seed
 from src.utils import (centroid_cn, centroid_cset, check_consistency,
-                       check_intersection, get_bn_counts, get_cpt_index,
+                       check_intersection, credal_sets_intersect,
+                       get_bn_counts, get_cpt_index,
                        get_cpt_shape, get_min_max_bns, get_parent_confs,
                        get_tabular_cpt, gt_containment_frac, jsd,
                        learn_bn_params, lookup_cpt_row, maxent_cn,
@@ -48,7 +49,7 @@ def bn_with_parent():
 
 @pytest.fixture
 def bn_nonalpha():
-    # The real network used by exp1.py/exp2.py; unlike bn_with_parent, its
+    # The real network used by exp.py; unlike bn_with_parent, its
     # labels aren't alphabetically ordered, so it catches the
     # topandas()-vs-native-declaration-order mismatch bn_with_parent cannot.
     return gum.loadBN("cancer.bif")
@@ -170,6 +171,47 @@ def test_check_intersection_degenerate_credal_sets():
     assert check_intersection(v_point, v_far) is False
 
 
+# credal_sets_intersect: fast O(1) binary-variable path, cross-checked
+# against the general vertices_cset+check_intersection route on the exact
+# same cases as above (it must agree everywhere, only faster).
+
+
+def test_credal_sets_intersect_binary_matches_check_intersection():
+    cases = [
+        (([0.2, 0.4], [0.5, 0.8]), ([0.4, 0.3], [0.7, 0.6]), True),
+        (([0.0, 0.8], [0.1, 1.0]), ([0.8, 0.0], [1.0, 0.2]), False),
+        (([0.3, 0.7], [0.3, 0.7]), ([0.1, 0.5], [0.5, 0.9]), True),
+        (([0.3, 0.7], [0.3, 0.7]), ([0.8, 0.0], [1.0, 0.2]), False),
+    ]
+    for (min1, max1), (min2, max2), expected in cases:
+        min1, max1, min2, max2 = map(np.array, (min1, max1, min2, max2))
+        assert credal_sets_intersect(min1, max1, min2, max2) is expected
+
+        # Cross-check against the general (slow) path directly.
+        v1 = vertices_cset(min1, max1)
+        v2 = vertices_cset(min2, max2)
+        assert credal_sets_intersect(min1, max1, min2, max2) == check_intersection(
+            v1, v2
+        )
+
+
+def test_credal_sets_intersect_touching_at_a_single_point():
+    # Category-0 segments [0.2, 0.5] and [0.5, 0.8] share exactly the point
+    # 0.5; category 1 is each one's mirror image (1 - category 0).
+    min1, max1 = np.array([0.2, 0.5]), np.array([0.5, 0.8])
+    min2, max2 = np.array([0.5, 0.2]), np.array([0.8, 0.5])
+    assert credal_sets_intersect(min1, max1, min2, max2) is True
+
+
+def test_credal_sets_intersect_falls_back_for_nonbinary():
+    # >2 categories: no closed form, must route through the general LP path
+    # and agree with it exactly.
+    min1, max1 = np.array([0.1, 0.2, 0.0]), np.array([0.5, 0.6, 0.3])
+    min2, max2 = np.array([0.4, 0.4, 0.0]), np.array([0.6, 0.6, 0.2])
+    v1, v2 = vertices_cset(min1, max1), vertices_cset(min2, max2)
+    assert credal_sets_intersect(min1, max1, min2, max2) == check_intersection(v1, v2)
+
+
 # vac_cn
 
 
@@ -265,7 +307,7 @@ def test_perturb_bn_params_handles_exact_zero_entry():
     assert np.all(cpt_new >= 0)
 
 
-# resample_bn_params (not wired into exp1.py/exp2.py, kept as an alternative
+# resample_bn_params (not wired into exp.py, kept as an alternative
 # shift generator, tested per explicit request)
 
 
@@ -754,7 +796,7 @@ def test_gt_containment_frac_uses_native_row_order_on_nonalpha_network(bn_nonalp
     assert gt_containment_frac(bn_nonalpha, bn_min, bn_max) == 1.0
 
 
-# snapshot_cpts: plain-numpy archival of a BN's CPTs (exp1.py's/exp2.py's
+# snapshot_cpts: plain-numpy archival of a BN's CPTs (exp.py's
 # per-task results/models/<task_id>.pkl files).
 
 

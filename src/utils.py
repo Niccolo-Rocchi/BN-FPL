@@ -41,6 +41,36 @@ def check_intersection(V1, V2) -> bool:
     return False
 
 
+# Fast intersection check for a single CPT row: exact for a binary variable,
+# falls back to check_intersection's general LP for >2 categories.
+def credal_sets_intersect(
+    cpt_min_1: np.array, cpt_max_1: np.array, cpt_min_2: np.array, cpt_max_2: np.array
+) -> bool:
+    """
+    Whether two credal sets for the same row (i.e., the same X|pi_X
+    configuration, for two different clients/models) intersect.
+
+    For a binary X, the simplex constraint p_0+p_1=1 makes the credal set
+    on category 0 exactly the scalar interval [cpt_min[0], cpt_max[0]]
+    (category 1 is its mirror image); intersecting two such intervals is
+    then a plain O(1) comparison, equivalent to but far cheaper than
+    routing through vertices_cset+check_intersection's vertex
+    enumeration/LP. NOT valid for >2 categories, where the per-category
+    box does not by itself pin down the credal set's shape: check_intersection
+    (exact, general) is used there instead.
+    """
+    if len(cpt_min_1) == 2:
+        safe_assert(np.isclose(cpt_min_1[0] + cpt_max_1[1], 1.0, atol=1e-6))
+        safe_assert(np.isclose(cpt_min_2[0] + cpt_max_2[1], 1.0, atol=1e-6))
+        lo = max(cpt_min_1[0], cpt_min_2[0])
+        hi = min(cpt_max_1[0], cpt_max_2[0])
+        return bool(lo <= hi + 1e-9)
+
+    v1 = vertices_cset(cpt_min_1, cpt_max_1)
+    v2 = vertices_cset(cpt_min_2, cpt_max_2)
+    return check_intersection(v1, v2)
+
+
 # Define a vacuous CN based on a given BN
 def vac_cn(bn: gum.BayesNet):
 

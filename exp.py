@@ -297,6 +297,7 @@ def run_grid(
     max_tasks_per_child: int,
     row_fieldnames: tuple = ROW_FIELDNAMES,
     task_fn=_exp_star,
+    n_workers: int = n_jobs,
 ) -> None:
     """
     Shared, memory-safe execution engine for a flattened task list. Writes
@@ -306,7 +307,10 @@ def run_grid(
     `row_fieldnames`/`task_fn` default to this module's own (local
     learning & update phase); exp_global.py (global optimization phase)
     reuses this engine unchanged by passing its own CSV schema and
-    per-task worker instead.
+    per-task worker instead. `n_workers` defaults to the whole-machine
+    `n_jobs` (CPU count - 1); pass a smaller value to cap peak memory
+    (roughly peak-RSS-per-task x n_workers) on a machine where cores are
+    more plentiful than RAM.
     """
     _check_unique_task_ids(tasks)
 
@@ -331,7 +335,7 @@ def run_grid(
         csv_f.flush()
 
         ctx = mp.get_context("fork")
-        with ctx.Pool(processes=n_jobs, maxtasksperchild=max_tasks_per_child) as pool:
+        with ctx.Pool(processes=n_workers, maxtasksperchild=max_tasks_per_child) as pool:
             for row, models, task_id in pool.imap_unordered(task_fn, tasks):
                 if row is None:
                     n_failed += 1
