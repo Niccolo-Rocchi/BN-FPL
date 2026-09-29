@@ -55,7 +55,7 @@ def _cn_from_bounds(bn_min, bn_max):
     """
     Build a CN directly from bn_min/bn_max, bypassing CN's `bn_min_max=`
     constructor path (which calls gum.CredalNet.intervalToCredal). That path
-    is not used anywhere in the actual exp1.py/mosaic.py pipeline (every real
+    is not used anywhere in the actual exp.py/mosaic.py pipeline (every real
     CN is built via the `cn=` path instead) and turns out to be fragile: it
     can raise a pyagrum FatalError (LRSWrapper::_initLrs_) for some bound
     combinations. The resulting gum.CredalNet is, in any case, never read
@@ -358,6 +358,47 @@ def test_prior_cn_median_over_two_variable_network():
     # X: 1 row, intersects (frac=1.0). Y: 2 rows (one per X value), neither
     # intersects (frac=0.0 each). Overall: median([1.0, 0.0, 0.0]) == 0.0.
     assert median == 0.0
+
+
+# Regression test: PriorCPT.set_clients used to copy.deepcopy() each FULL
+# candidate Client, dragging along its prior_cn/cn_mosaic. Once a client has
+# itself been an update's target, those recursively nest a full client
+# snapshot per variable already processed, so re-using it as a candidate for
+# a LATER target's update re-copies that nested structure -- unbounded,
+# exponential blowup with the number of (variable, already-updated-target)
+# combinations touched so far. Confirmed empirically: exp.py's own
+# single-target usage pattern reached std::bad_alloc under a 2GB virtual
+# memory cap before the fix (making every client a target in turn, as
+# exp_global.py's global optimization phase does, is far worse). The fix
+# (_client_snapshot) keeps only what PriorCPT.compute ever reads
+# (gt/cn/bn_mle), sidestepping prior_cn/cn_mosaic entirely.
+def test_set_clients_does_not_blow_up_memory_across_repeated_targets():
+    import resource
+    import time
+
+    bn = gum.loadBN("cancer.bif")
+    mask = gum.BayesNet(bn)
+    for n in mask.nodes():
+        mask.cpt(n).fillWith(1)
+
+    E = 6
+    clients = {e: Client(gum.BayesNet(bn), gum.BayesNet(mask)) for e in range(E)}
+    for c in clients.values():
+        c.generate_base_info(n=30, ess=2)
+
+    start = time.time()
+    for e in range(E):
+        target = clients[e]
+        target.reset_prior()
+        prior_clients = [target] + [c for k, c in clients.items() if k != e]
+        target.prior_cn.compute(prior_clients, weighting=2)
+    elapsed = time.time() - start
+
+    # Exponential blowup would take far longer than this on any machine
+    # (the pre-fix version did not even finish within a 30s timeout at
+    # E=5); a generous bound is used to stay robust across machines.
+    assert elapsed < 15.0
+    assert resource.getrusage(resource.RUSAGE_SELF).ru_maxrss < 1_500_000  # ~1.5GB
 
 
 # Client.get_cset

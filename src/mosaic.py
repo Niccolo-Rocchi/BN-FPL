@@ -172,8 +172,19 @@ class PriorCPT(CN_CPT):
         """
         For convenience: clients_list[0] is the client which `self` belongs;
         clients_list[1:] are the clients to use as prior.
+
+        Stores a minimal snapshot of each client (see _client_snapshot),
+        NOT a full Client deep copy: `compute` below only ever reads
+        gt/cn/bn_mle from `self.clients`, and a full deep copy would also
+        drag along each client's own prior_cn/cn_mosaic. For a client that
+        has already been an update's own target, those recursively nest a
+        full client snapshot per variable already processed -- unbounded,
+        exponential memory growth with the number of variables/targets
+        touched so far (confirmed: OOM, std::bad_alloc, even for exp.py's
+        own single-target usage). See
+        test_mosaic.py::test_set_clients_does_not_blow_up_memory.
         """
-        self.clients = [copy.deepcopy(c) for c in clients_list]
+        self.clients = [_client_snapshot(c) for c in clients_list]
 
     def is_vacuous(self) -> bool:
 
@@ -505,3 +516,26 @@ class Client:
     def mosaic_cn(self):
         for var in self.bn.names():
             self.mosaic_cn_cpt(var)
+
+
+# Minimal, independent snapshot of a Client, holding only what
+# PriorCPT.compute ever reads from a prior candidate: gt (for get_cset's
+# parent-configuration lookup), cn (the local IDM credal set, read via
+# get_cset and cn.cpts[var].vertices), and bn_mle (weighting=3 only).
+# Deliberately NOT a full Client deep copy -- see PriorCPT.set_clients for
+# why that blows up memory. Everything else is left None: get_cset (the
+# only Client method ever called on one of these) never touches it.
+def _client_snapshot(client: "Client") -> "Client":
+    snap = Client.__new__(Client)
+    snap.label = None
+    snap.gt = None if client.gt is None else gum.BayesNet(client.gt)
+    snap.bn_mle = None if client.bn_mle is None else gum.BayesNet(client.bn_mle)
+    snap.cn = None if client.cn is None else copy.deepcopy(client.cn)
+    snap.mask = None
+    snap.prior_cn = None
+    snap.cn_mosaic = None
+    snap.data = None
+    snap.bn = None
+    snap.bn_counts = None
+    snap.ess = None
+    return snap
