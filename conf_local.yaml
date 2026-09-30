@@ -16,7 +16,7 @@ s_sizes:
   step: 5
 # All 3 weighting schemas (see exp_local.py's WEIGHTING_SCHEMES / PriorCPT.compute)
 # are computed in every run, so there is no `weighting` hyperparameter here.
-res_path: results
+res_path: results_local
 bn_base_path: ./cancer.bif
 n_repetitions: 50
 n_bns: 100
