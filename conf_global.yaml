@@ -1,18 +1,18 @@
 ## Configuration file for exp_global.py: the server-side global
 ## optimization phase (cap6_extract.tex, Sec. "Global Optimization",
-## Eq. eq:global_opt), restricted for now to alpha=1, beta=0 -- i.e. pure
-## clustering of clients per mechanism X|pi_X (see src/global_opt.py),
-## evaluated against the ground-truth partition induced by
-## perturb_bn_params' own resampling mask.
+## Eq. eq:global_opt), solved via the lexicographic alpha >> beta
+## procedure (clustering of clients per mechanism X|pi_X, entropy
+## breaking ties only; see src/global_opt.py), evaluated against the
+## ground-truth partition induced by perturb_bn_params' own resampling mask.
 
 # Grid hyperparameters: each is a list, swept as a cartesian product. A
 # single value still needs list syntax, e.g. `n_clients: [10]`.
-n_clients: [10]            # Number of clients. Unlike exp.py, ALL of them
+n_clients: [10]            # Number of clients. Unlike exp_local.py, ALL of them
                             # (including client 0) are perturbed symmetrically
-                            # -- see exp_global.py's init_clients -- since the
+                            # (see exp_global.py's init_clients), since the
                             # global phase's ground truth is pairwise
                             # (mask_i AND mask_j), not tied to a fixed anchor.
-ess: [2, 100, 200]  # Equivalent sample size for local IDM.
+ess: [2, 10, 50, 100]  # Equivalent sample size for local IDM.
                             # An exploratory sweep (results_global_explore/,
                             # not committed) found that what drives MOSAIC's
                             # clustering gain over the no-update ablation is
@@ -22,42 +22,29 @@ ess: [2, 100, 200]  # Equivalent sample size for local IDM.
                             # ess=10 -> ARI -0.18), and clearly positive once
                             # ess is comparable to or exceeds N (e.g. N=200,
                             # ess=100 -> ARI +0.13; N=500, ess=200 -> +0.13).
-                            # ess=500 added here to reach ess>=N for the
-                            # largest N below too.
 prob_shift: [0.5]           # Fixed: 0 would make every mechanism's ground
                             # truth a single giant cluster, trivializing the
                             # clustering task.
-alpha: [0.1, 10]              # Dirichlet concentration for parameter perturbation.
+alpha: [0.1, 1]              # Dirichlet concentration for parameter perturbation.
                             # The same exploratory sweep found the ess/N
                             # relationship above holds essentially unchanged
                             # across alpha in [0.1, 10] (near-zero correlation
                             # between alpha and the gain), so alpha is not
-                            # swept here -- adjust if that should be checked
+                            # swept here; adjust if that should be checked
                             # again at this specific ess/N grid.
 
 s_sizes:
   min: 5
   max: 510
-  step: 50                 # N now swept ([100,200,300,400,500]), unlike the
-                             # earlier fixed N=200: the ess/N finding above
-                             # means N is no longer a nuisance parameter to
-                             # freeze, it directly co-determines where MOSAIC
-                             # wins or loses.
+  step: 5
 
 res_path: results_global
 bn_base_path: ./cancer.bif
-n_repetitions: 10
+n_repetitions: 50
 # Archive every task's CPT snapshots (bn_mle, local IDM, per-weighting
 # MOSAIC-updated credal sets) for EVERY client (all n_clients are targets
-# here, unlike exp.py's single client_num) to
+# here, unlike exp_local.py's single client_num) to
 # results_global/models/<task_id>.pkl (see snapshot_cpts in exp_global.py).
-save_models: True
+save_models: False
 max_tasks_per_child: 50
-# Optional cap on the number of parallel worker processes (see exp.run_grid's
-# n_workers). Unset (or null) uses every CPU core minus one, exp.py's own
-# default -- fine on this 16-core/14GB laptop (peak measured: ~4.5GB across
-# 15 workers for the full grid below). On a VM with many more cores than RAM
-# per core, set this to bound peak memory to roughly
-# max_workers x (peak RSS per task, ~350-500MB at n_clients=10): e.g.
-# `max_workers: 8` bounds peak memory to ~3-4GB regardless of core count.
-max_workers: null
+

@@ -4,7 +4,7 @@ import traceback
 import numpy as np
 import pyagrum as gum
 
-import exp
+import exp_local
 from src.config import load_config, set_seed
 from src.global_opt import (all_mechanisms, ari_ami, evaluate_mechanism,
                             evaluate_mechanism_mle, pairwise_confusion,
@@ -12,8 +12,8 @@ from src.global_opt import (all_mechanisms, ari_ami, evaluate_mechanism,
 from src.mosaic import Client
 from src.utils import perturb_bn_params, snapshot_cpts
 
-n_jobs = exp.n_jobs
-GRID_KEYS = exp.GRID_KEYS
+n_jobs = exp_local.n_jobs
+GRID_KEYS = exp_local.GRID_KEYS
 
 # W-1 is excluded, same as the local learning & update phase's own plots
 # (cap6_extract.tex, Sec. "Local Learning & Update Phase Results"): it
@@ -40,12 +40,10 @@ ROW_FIELDNAMES = (
 
 def init_clients(config) -> dict:
     """
-    Same perturbation as exp.py's init_clients, except ALL clients
+    Same perturbation as exp_local.py's init_clients, except ALL clients
     (including client 0) are subject to `prob_shift`: the global phase's
-    ground truth is pairwise (mask_i AND mask_j, see
-    src/global_opt.ground_truth_labels), so no client needs to stay a fixed,
-    always-baseline anchor the way exp.py's client 0 does for its
-    JSD-against-a-known-truth evaluation.
+    ground truth is pairwise (see src/global_opt.ground_truth_labels), so no
+    client needs to stay a fixed, always-baseline anchor.
     """
     E = config["n_clients"]
     alpha = config["alpha"]
@@ -96,7 +94,7 @@ def _network_metrics(mechanism_results: list) -> dict:
 
 def exp_global(config, n, rep) -> tuple:
     """
-    Fully self-contained (see exp.py's exp()): everything is read from
+    Fully self-contained (see exp_local.py's exp()): everything is read from
     `config`, nothing from worker-global state.
     """
     task_seed = hash((n, rep)) % (2**32)
@@ -150,7 +148,7 @@ def exp_global(config, n, rep) -> tuple:
 
     # MOSAIC, once per weighting schema. Every client is, in turn, the
     # update's target (see init_clients docstring on why this differs from
-    # exp.py's single client_num); each pass overwrites every client's
+    # exp_local.py's single client_num); each pass overwrites every client's
     # cn_mosaic in place, so the network-wide clustering evaluation for a
     # given weighting must run before moving to the next one.
     for w in WEIGHTING_SCHEMES:
@@ -198,11 +196,11 @@ def main():
     config = load_config("conf_global.yaml")
     save_models = config.get("save_models", True)
     max_tasks_per_child = config.get("max_tasks_per_child", 100)
-    # Every client is a target in turn here (unlike exp.py's single
-    # client_num), so peak memory per task -- and hence n_workers x that
-    # peak -- is higher; cap it via conf_global.yaml's `max_workers` on a
+    # Every client is a target in turn here (unlike exp_local.py's single
+    # client_num), so peak memory per task, and hence n_workers times that
+    # peak, is higher; cap it via conf_global.yaml's `max_workers` on a
     # machine where cores are more plentiful than RAM (e.g. a VM sized for
-    # compute, not memory). Unset (the default) keeps exp.py's own
+    # compute, not memory). Unset (the default) keeps exp_local.py's own
     # behavior: n_jobs = CPU count - 1.
     n_workers = min(n_jobs, config["max_workers"]) if config.get("max_workers") else n_jobs
 
@@ -212,9 +210,9 @@ def main():
         for x in np.arange(sizes_dict["min"], sizes_dict["max"], sizes_dict["step"])
     ]
 
-    tasks = exp.build_tasks(config, sizes)
+    tasks = exp_local.build_tasks(config, sizes)
 
-    n_combos = len(exp.hyperparameter_combos(config))
+    n_combos = len(exp_local.hyperparameter_combos(config))
     print(
         f"# {n_combos} hyperparameter combinations x {len(sizes)} size(s) x "
         f"{config['n_repetitions']} repetitions = {len(tasks)} total tasks "
@@ -222,7 +220,7 @@ def main():
         flush=True,
     )
 
-    exp.run_grid(
+    exp_local.run_grid(
         tasks,
         config["res_path"],
         save_models,

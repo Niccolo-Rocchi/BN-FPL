@@ -55,7 +55,7 @@ def _cn_from_bounds(bn_min, bn_max):
     """
     Build a CN directly from bn_min/bn_max, bypassing CN's `bn_min_max=`
     constructor path (which calls gum.CredalNet.intervalToCredal). That path
-    is not used anywhere in the actual exp.py/mosaic.py pipeline (every real
+    is not used anywhere in the actual exp_local.py/mosaic.py pipeline (every real
     CN is built via the `cn=` path instead) and turns out to be fragile: it
     can raise a pyagrum FatalError (LRSWrapper::_initLrs_) for some bound
     combinations. The resulting gum.CredalNet is, in any case, never read
@@ -360,18 +360,10 @@ def test_prior_cn_median_over_two_variable_network():
     assert median == 0.0
 
 
-# Regression test: PriorCPT.set_clients used to copy.deepcopy() each FULL
-# candidate Client, dragging along its prior_cn/cn_mosaic. Once a client has
-# itself been an update's target, those recursively nest a full client
-# snapshot per variable already processed, so re-using it as a candidate for
-# a LATER target's update re-copies that nested structure -- unbounded,
-# exponential blowup with the number of (variable, already-updated-target)
-# combinations touched so far. Confirmed empirically: exp.py's own
-# single-target usage pattern reached std::bad_alloc under a 2GB virtual
-# memory cap before the fix (making every client a target in turn, as
-# exp_global.py's global optimization phase does, is far worse). The fix
-# (_client_snapshot) keeps only what PriorCPT.compute ever reads
-# (gt/cn/bn_mle), sidestepping prior_cn/cn_mosaic entirely.
+# Regression test for the memory bug fixed by _client_snapshot: set_clients
+# used to copy.deepcopy() each full candidate Client, which recursively
+# dragged along prior_cn/cn_mosaic and blew up memory once a client had
+# already been an update target (confirmed: std::bad_alloc under a 2GB cap).
 def test_set_clients_does_not_blow_up_memory_across_repeated_targets():
     import resource
     import time

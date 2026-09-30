@@ -170,19 +170,10 @@ class PriorCPT(CN_CPT):
 
     def set_clients(self, clients_list: list):
         """
-        For convenience: clients_list[0] is the client which `self` belongs;
-        clients_list[1:] are the clients to use as prior.
-
-        Stores a minimal snapshot of each client (see _client_snapshot),
-        NOT a full Client deep copy: `compute` below only ever reads
-        gt/cn/bn_mle from `self.clients`, and a full deep copy would also
-        drag along each client's own prior_cn/cn_mosaic. For a client that
-        has already been an update's own target, those recursively nest a
-        full client snapshot per variable already processed -- unbounded,
-        exponential memory growth with the number of variables/targets
-        touched so far (confirmed: OOM, std::bad_alloc, even for exp.py's
-        own single-target usage). See
-        test_mosaic.py::test_set_clients_does_not_blow_up_memory.
+        clients_list[0] is self's own client; the rest are candidate priors.
+        Stores a minimal snapshot per client (_client_snapshot), not a full
+        deep copy, to avoid recursively copying prior_cn/cn_mosaic across
+        clients that were already update targets.
         """
         self.clients = [_client_snapshot(c) for c in clients_list]
 
@@ -436,7 +427,7 @@ class Client:
 
     def get_cset(self, var: str, parents: dict = None) -> tuple:
         """
-        Get the credal set `var`|`parents`, .
+        Get the credal set `var`|`parents`.
         If `parents` is None, return all csets.
         """
 
@@ -519,12 +510,8 @@ class Client:
 
 
 # Minimal, independent snapshot of a Client, holding only what
-# PriorCPT.compute ever reads from a prior candidate: gt (for get_cset's
-# parent-configuration lookup), cn (the local IDM credal set, read via
-# get_cset and cn.cpts[var].vertices), and bn_mle (weighting=3 only).
-# Deliberately NOT a full Client deep copy -- see PriorCPT.set_clients for
-# why that blows up memory. Everything else is left None: get_cset (the
-# only Client method ever called on one of these) never touches it.
+# PriorCPT.compute reads from a prior candidate: gt, cn, and bn_mle.
+# Deliberately not a full Client deep copy; see PriorCPT.set_clients.
 def _client_snapshot(client: "Client") -> "Client":
     snap = Client.__new__(Client)
     snap.label = None

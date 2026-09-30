@@ -1,9 +1,9 @@
 """
 Tests for src/global_opt.py: the global optimization phase (clustering
 clients per mechanism via the full lexicographic alpha-then-beta
-procedure), see the module's own docstring for the Helly's-theorem
+procedure). See the module's own docstring for the Helly's-theorem
 argument behind cluster_milp and for why the beta (entropy) stage is not
-just a theoretical nicety -- ties in the alpha term are common (7-16% of
+just a theoretical nicety: ties in the alpha term are common (7-16% of
 mechanisms on real data), not a negligible edge case.
 """
 
@@ -23,7 +23,7 @@ from src.global_opt import (all_mechanisms, ari_ami, cluster_1d_wcss_optimal,
 from src.mosaic import CN, CN_CPT, Client
 from src.utils import get_cpt_shape, jsd
 
-# ground_truth_labels ---------------------------------------------------
+# ground_truth_labels
 
 
 def test_ground_truth_labels_all_kept():
@@ -49,7 +49,7 @@ def test_ground_truth_labels_mixed():
     assert labels[2] != labels[4]
 
 
-# intersection_graph ------------------------------------------------------
+# intersection_graph
 
 
 def test_intersection_graph_matches_pairwise_overlap():
@@ -66,7 +66,7 @@ def test_intersection_graph_matches_pairwise_overlap():
 
 
 # cluster_milp: the central correctness property (Helly-consistent
-# clustering, see module docstring) --------------------------------------
+# clustering, see module docstring)
 
 
 def test_cluster_milp_full_triangle_merges_all():
@@ -121,8 +121,8 @@ def test_cluster_milp_maximizes_pair_count_over_greedy_alternative():
 
 # is_clustering_optimum_unique / cluster_representative_thetas /
 # total_entropy / cluster_milp_lexicographic: the full two-stage
-# lexicographic procedure (alpha term first, beta term only to break ties
-# -- see the module docstring for why ties are common, not negligible).
+# lexicographic procedure (alpha term first, beta term only to break ties;
+# see the module docstring for why ties are common, not negligible).
 
 
 def test_is_clustering_optimum_unique_triangle_is_unique():
@@ -176,12 +176,11 @@ def test_total_entropy_weights_by_cluster_size():
 def _star_with_known_best_leaf():
     """
     Center 0 intersects leaves 1,2,3 (which pairwise don't intersect, so
-    exactly one merge is optimal -- see test_cluster_milp_maximizes_pair_
-    count_over_greedy_alternative). Leaf 1's overlap with the center
+    exactly one merge is optimal). Leaf 1's overlap with the center
     contains exactly 0.5 (max possible entropy); leaves 2 and 3's overlaps
     do not. So the entropy-maximizing tie-break must pick {0,1}, never
-    {0,2} or {0,3} -- independently verified against total_entropy directly
-    in test_cluster_milp_lexicographic_breaks_tie_by_entropy below.
+    {0,2} or {0,3}: verified against total_entropy directly in
+    test_cluster_milp_lexicographic_breaks_tie_by_entropy below.
     """
     rows_min = [
         np.array([0.30, 0.30]),  # center: [0.30, 0.70]
@@ -275,7 +274,7 @@ def test_cluster_milp_lexicographic_tie_rate_on_real_data_is_substantial():
     assert n_ties > 0  # ties must actually occur in this smoke sample
 
 
-# credal_jsd_distance / jsd_distance_matrix / cluster_jsd_hierarchical -----
+# credal_jsd_distance / jsd_distance_matrix / cluster_jsd_hierarchical
 
 
 def test_credal_jsd_distance_zero_when_intersecting():
@@ -346,7 +345,7 @@ def test_cluster_jsd_hierarchical_k1_everyone_together():
     assert np.all(labels == labels[0])
 
 
-# cluster_1d_wcss_optimal ---------------------------------------------------
+# cluster_1d_wcss_optimal
 
 
 def _wcss(values, labels):
@@ -420,9 +419,9 @@ def test_cluster_1d_wcss_optimal_invariant_to_input_order():
 def test_cluster_1d_wcss_optimal_matches_brute_force_on_random_inputs():
     # Regression test: an earlier version of this function cut the k-1
     # LARGEST GAPS between sorted values instead of solving for the true
-    # WCSS optimum -- a different criterion (it exactly maximizes the
-    # smallest inter-cluster gap instead), found to be strictly
-    # WCSS-suboptimal in ~20% of random small inputs by this exact check.
+    # WCSS optimum (a different criterion, maximizing the smallest
+    # inter-cluster gap instead), found strictly WCSS-suboptimal in ~20%
+    # of random small inputs by this exact check.
     rng = np.random.default_rng(1)
     for _ in range(200):
         n = int(rng.integers(4, 8))
@@ -447,7 +446,7 @@ def test_cluster_1d_wcss_optimal_beats_largest_gap_heuristic_on_known_case():
     assert got == pytest.approx(optimal, abs=1e-6)
 
 
-# pairwise_confusion / precision_recall_f1 / ari_ami -----------------------
+# pairwise_confusion / precision_recall_f1 / ari_ami
 
 
 def test_pairwise_confusion_hand_computed():
@@ -485,7 +484,7 @@ def test_ari_ami_bounded_above_by_one():
     assert ami <= 1.0 + 1e-9
 
 
-# all_mechanisms ------------------------------------------------------------
+# all_mechanisms
 
 
 def test_all_mechanisms_covers_every_row_of_cancer_bn():
@@ -500,7 +499,7 @@ def test_all_mechanisms_covers_every_row_of_cancer_bn():
     assert vars_seen == set(bn.names())
 
 
-# evaluate_mechanism / evaluate_mechanism_mle: small integration test ------
+# evaluate_mechanism / evaluate_mechanism_mle: small integration test
 
 
 def _binary_client(p0_min, p0_max, mask_row_value, mle=None):

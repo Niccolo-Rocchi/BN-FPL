@@ -1,7 +1,7 @@
 """
 Tests for src/utils.py.
 
-Covers both the functions exercised by the current `exp.py`
+Covers both the functions exercised by the current `exp_local.py`
 local learning & update pipeline (vertices_cset, check_intersection,
 get_bn_counts, perturb_bn_params, get_cpt_index/shape/tabular,
 get_min_max_bns, jsd_credal_stats, gt_containment_frac) and the broader
@@ -49,7 +49,7 @@ def bn_with_parent():
 
 @pytest.fixture
 def bn_nonalpha():
-    # The real network used by exp.py; unlike bn_with_parent, its
+    # The real network used by exp_local.py; unlike bn_with_parent, its
     # labels aren't alphabetically ordered, so it catches the
     # topandas()-vs-native-declaration-order mismatch bn_with_parent cannot.
     return gum.loadBN("cancer.bif")
@@ -307,7 +307,7 @@ def test_perturb_bn_params_handles_exact_zero_entry():
     assert np.all(cpt_new >= 0)
 
 
-# resample_bn_params (not wired into exp.py, kept as an alternative
+# resample_bn_params (not wired into exp_local.py, kept as an alternative
 # shift generator, tested per explicit request)
 
 
@@ -796,7 +796,7 @@ def test_gt_containment_frac_uses_native_row_order_on_nonalpha_network(bn_nonalp
     assert gt_containment_frac(bn_nonalpha, bn_min, bn_max) == 1.0
 
 
-# snapshot_cpts: plain-numpy archival of a BN's CPTs (exp.py's
+# snapshot_cpts: plain-numpy archival of a BN's CPTs (exp_local.py's
 # per-task results/models/<task_id>.pkl files).
 
 

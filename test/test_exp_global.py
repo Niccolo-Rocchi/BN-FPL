@@ -1,7 +1,7 @@
 """
-Tests for exp_global.py: the global optimization phase (clustering-only,
-alpha=1, beta=0 -- see src/global_opt.py), the counterpart to test_exp.py
-for exp.py's local learning & update phase.
+Tests for exp_global.py: the global optimization phase (lexicographic
+alpha >> beta clustering, see src/global_opt.py), the counterpart to
+test_exp_local.py for exp_local.py's local learning & update phase.
 """
 
 import numpy as np
@@ -28,7 +28,7 @@ def _seed():
 
 
 def test_init_clients_perturbs_every_client_symmetrically():
-    # Unlike exp.py's init_clients (client 0 always == bn_base exactly),
+    # Unlike exp_local.py's init_clients (client 0 always == bn_base exactly),
     # prob_shift applies to every client here, including client 0.
     np.random.seed(0)
     gum.initRandom(0)
@@ -85,8 +85,8 @@ def test_exp_global_save_models_false_returns_empty_models():
 def test_exp_global_prob_shift_zero_gives_one_true_cluster_everywhere():
     # Every client stays byte-identical to bn_base (see the init_clients
     # test above), so the ground-truth partition is trivially "everyone in
-    # one cluster" for every mechanism, deterministically -- regardless of
-    # how well any clustering METHOD actually recovers it.
+    # one cluster" for every mechanism, regardless of how well any
+    # clustering METHOD actually recovers it.
     row, _, _ = exp_g.exp_global(dict(BASE_CONFIG, prob_shift=0.0), 50, rep=0)
     assert row["n_clusters_true_mean"] == pytest.approx(1.0)
 

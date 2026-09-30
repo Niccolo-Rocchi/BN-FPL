@@ -1,12 +1,12 @@
 """
-Tests for exp.py: the full-grid local learning & update pipeline.
+Tests for exp_local.py: the full-grid local learning & update pipeline.
 
 exp(config, n, rep) is fully self-contained (no worker-global state, so it
 is called directly here with an explicit config, no pool/initializer
 needed) and returns (row, models, task_id): `row` is the JSD/containment
 summary dict (destined for one line of df_tot.csv), `models` is a dict of
 raw CPT snapshots (destined for its own results/models/<task_id>.pkl file,
-empty when config["save_models"] is False, which conf.yaml sets for a
+empty when config["save_models"] is False, which conf_local.yaml sets for a
 plain local-learning-and-update sweep; exp()'s own fallback, if the key is
 missing entirely, is True), and `task_id` is the (n_clients, ess,
 prob_shift, alpha, size, rep) key both are filed under.
@@ -18,7 +18,7 @@ import numpy as np
 import pyagrum as gum
 import pytest
 
-import exp as exp_mod
+import exp_local as exp_mod
 from src.config import set_seed
 from src.utils import gt_containment_frac
 
@@ -226,7 +226,7 @@ def test_check_unique_task_ids_passes_for_a_normal_grid():
 def test_check_unique_task_ids_raises_on_duplicate_grid_value():
     # Regression test for the exact failure mode this check exists to catch:
     # a duplicate value inside one grid hyperparameter list (e.g. a typo'd
-    # `ess: [1, 1]` in conf.yaml) makes build_tasks silently emit the same
+    # `ess: [1, 1]` in conf_local.yaml) makes build_tasks silently emit the same
     # task_id twice, which would otherwise make the second task's CSV row /
     # model file silently overwrite the first's.
     config = dict(

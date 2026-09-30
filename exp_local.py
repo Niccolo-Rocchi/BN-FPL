@@ -25,7 +25,7 @@ n_jobs = max(1, len(os.sched_getaffinity(0)) - 1)
 WEIGHTING_SCHEMES = (1, 2, 3)
 
 # Hyperparameters swept as a grid (cartesian product): each is a list in
-# conf.yaml, even when it holds a single value. One full (s_sizes x
+# conf_local.yaml, even when it holds a single value. One full (s_sizes x
 # n_repetitions x WEIGHTING_SCHEMES) sweep is run per combination.
 GRID_KEYS = ("n_clients", "ess", "prob_shift", "alpha")
 
@@ -226,7 +226,7 @@ def _check_unique_task_ids(tasks: list) -> None:
     """
     task_id = (n_clients, ess, prob_shift, alpha, size, rep) names every
     CSV row and model file, so it must be unique across `tasks`. Catches,
-    e.g., an accidental duplicate value in a conf.yaml grid list.
+    e.g., an accidental duplicate value in a conf_local.yaml grid list.
     """
     task_ids = [tuple(cfg[k] for k in GRID_KEYS) + (n, rep) for cfg, n, rep in tasks]
     if len(task_ids) != len(set(task_ids)):
@@ -259,8 +259,8 @@ def _log_memory(
     proc: psutil.Process, n_done: int, n_total: int, n_failed: int, t_start: float
 ) -> None:
     """
-    Print current memory usage (parent + all live worker children) and
-    throughput. See main()'s docstring-comment for how to read this.
+    Print current memory usage (parent + all live worker children),
+    task throughput, and estimated time remaining.
     """
     parent_rss = proc.memory_info().rss
 
@@ -300,17 +300,10 @@ def run_grid(
     n_workers: int = n_jobs,
 ) -> None:
     """
-    Shared, memory-safe execution engine for a flattened task list. Writes
-    each result to disk immediately and retires workers periodically
+    Shared, memory-safe execution engine for a flattened task list: writes
+    each result to disk immediately, and retires workers periodically
     (`maxtasksperchild`) to bound a native memory leak in `hopsy`.
-
-    `row_fieldnames`/`task_fn` default to this module's own (local
-    learning & update phase); exp_global.py (global optimization phase)
-    reuses this engine unchanged by passing its own CSV schema and
-    per-task worker instead. `n_workers` defaults to the whole-machine
-    `n_jobs` (CPU count - 1); pass a smaller value to cap peak memory
-    (roughly peak-RSS-per-task x n_workers) on a machine where cores are
-    more plentiful than RAM.
+    `row_fieldnames`/`task_fn` let exp_global.py reuse this unchanged.
     """
     _check_unique_task_ids(tasks)
 
@@ -387,7 +380,7 @@ def main():
     set_seed()
 
     # Choose configuration file
-    config = load_config("conf.yaml")
+    config = load_config("conf_local.yaml")
     save_models = config.get("save_models", True)
     max_tasks_per_child = config.get("max_tasks_per_child", 100)
 

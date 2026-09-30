@@ -47,17 +47,10 @@ def credal_sets_intersect(
     cpt_min_1: np.array, cpt_max_1: np.array, cpt_min_2: np.array, cpt_max_2: np.array
 ) -> bool:
     """
-    Whether two credal sets for the same row (i.e., the same X|pi_X
-    configuration, for two different clients/models) intersect.
-
-    For a binary X, the simplex constraint p_0+p_1=1 makes the credal set
-    on category 0 exactly the scalar interval [cpt_min[0], cpt_max[0]]
-    (category 1 is its mirror image); intersecting two such intervals is
-    then a plain O(1) comparison, equivalent to but far cheaper than
-    routing through vertices_cset+check_intersection's vertex
-    enumeration/LP. NOT valid for >2 categories, where the per-category
-    box does not by itself pin down the credal set's shape: check_intersection
-    (exact, general) is used there instead.
+    Whether two credal sets for the same row (X|pi_X, two different
+    clients/models) intersect. For binary X, the credal set on category 0
+    is exactly [cpt_min[0], cpt_max[0]], so this is an O(1) interval
+    comparison; falls back to check_intersection's LP for >2 categories.
     """
     if len(cpt_min_1) == 2:
         safe_assert(np.isclose(cpt_min_1[0] + cpt_max_1[1], 1.0, atol=1e-6))
@@ -92,14 +85,9 @@ def perturb_bn_params(
     bn: gum.BayesNet, alpha: float, prob: float = 1.0
 ) -> gum.BayesNet:
     """
-    Each conditional X|pi_X is perturbed with probability `prob`.
-    The perturbed row is drawn from Dirichlet(alpha * row), which is
-    centered exactly on the original row (E[p_new] = row) with
-    Var[p_new_i] = row_i*(1-row_i)/(alpha+1): larger `alpha` means a
-    tighter (smaller) shift, and alpha -> infinity recovers the original
-    row exactly. Unlike additive Gaussian noise followed by clipping and
-    renormalization, every draw is automatically a valid probability
-    vector, with no ad hoc floor/renormalization needed.
+    Each conditional X|pi_X is perturbed with probability `prob`, drawing
+    from Dirichlet(alpha * row): centered on the original row, with larger
+    `alpha` giving a tighter shift (alpha -> infinity recovers it exactly).
     """
     bn_new = gum.BayesNet(bn)
     bn_mask = gum.BayesNet(bn)
