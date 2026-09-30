@@ -12,7 +12,7 @@ n_clients: [10]            # Number of clients. Unlike exp.py, ALL of them
                             # -- see exp_global.py's init_clients -- since the
                             # global phase's ground truth is pairwise
                             # (mask_i AND mask_j), not tied to a fixed anchor.
-ess: [1, 10, 20, 50, 100, 200, 500]  # Equivalent sample size for local IDM.
+ess: [2, 100, 200]  # Equivalent sample size for local IDM.
                             # An exploratory sweep (results_global_explore/,
                             # not committed) found that what drives MOSAIC's
                             # clustering gain over the no-update ablation is
@@ -27,7 +27,7 @@ ess: [1, 10, 20, 50, 100, 200, 500]  # Equivalent sample size for local IDM.
 prob_shift: [0.5]           # Fixed: 0 would make every mechanism's ground
                             # truth a single giant cluster, trivializing the
                             # clustering task.
-alpha: [0.1]              # Dirichlet concentration for parameter perturbation.
+alpha: [0.1, 10]              # Dirichlet concentration for parameter perturbation.
                             # The same exploratory sweep found the ess/N
                             # relationship above holds essentially unchanged
                             # across alpha in [0.1, 10] (near-zero correlation
@@ -36,9 +36,9 @@ alpha: [0.1]              # Dirichlet concentration for parameter perturbation.
                             # again at this specific ess/N grid.
 
 s_sizes:
-  min: 100
-  max: 600
-  step: 100                 # N now swept ([100,200,300,400,500]), unlike the
+  min: 5
+  max: 510
+  step: 50                 # N now swept ([100,200,300,400,500]), unlike the
                              # earlier fixed N=200: the ess/N finding above
                              # means N is no longer a nuisance parameter to
                              # freeze, it directly co-determines where MOSAIC
@@ -46,7 +46,7 @@ s_sizes:
 
 res_path: results_global
 bn_base_path: ./cancer.bif
-n_repetitions: 20
+n_repetitions: 10
 # Archive every task's CPT snapshots (bn_mle, local IDM, per-weighting
 # MOSAIC-updated credal sets) for EVERY client (all n_clients are targets
 # here, unlike exp.py's single client_num) to

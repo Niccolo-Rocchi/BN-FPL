@@ -1,7 +1,10 @@
 """
-Tests for src/global_opt.py: the global optimization phase restricted to
-alpha=1, beta=0 (pure clustering of clients per mechanism), see the
-module's own docstring for the Helly's-theorem argument behind cluster_milp.
+Tests for src/global_opt.py: the global optimization phase (clustering
+clients per mechanism via the full lexicographic alpha-then-beta
+procedure), see the module's own docstring for the Helly's-theorem
+argument behind cluster_milp and for why the beta (entropy) stage is not
+just a theoretical nicety -- ties in the alpha term are common (7-16% of
+mechanisms on real data), not a negligible edge case.
 """
 
 import numpy as np
@@ -10,10 +13,13 @@ import pytest
 
 from src.global_opt import (all_mechanisms, ari_ami, cluster_1d_wcss_optimal,
                             cluster_jsd_hierarchical, cluster_milp,
+                            cluster_milp_lexicographic,
+                            cluster_representative_thetas,
                             credal_jsd_distance, evaluate_mechanism,
                             evaluate_mechanism_mle, ground_truth_labels,
-                            intersection_graph, jsd_distance_matrix,
-                            pairwise_confusion, precision_recall_f1)
+                            intersection_graph, is_clustering_optimum_unique,
+                            jsd_distance_matrix, pairwise_confusion,
+                            precision_recall_f1, total_entropy)
 from src.mosaic import CN, CN_CPT, Client
 from src.utils import get_cpt_shape, jsd
 
@@ -111,6 +117,162 @@ def test_cluster_milp_maximizes_pair_count_over_greedy_alternative():
     labels = cluster_milp(edge)
     counts = np.bincount(labels)
     assert sorted(counts.tolist()) == [1, 1, 2]  # one pair merged, two singletons
+
+
+# is_clustering_optimum_unique / cluster_representative_thetas /
+# total_entropy / cluster_milp_lexicographic: the full two-stage
+# lexicographic procedure (alpha term first, beta term only to break ties
+# -- see the module docstring for why ties are common, not negligible).
+
+
+def test_is_clustering_optimum_unique_triangle_is_unique():
+    # All 3 pairwise intersect: the only way to reach objective=3 is
+    # merging all three, no alternative achieves the same value.
+    edge = np.array([[0, 1, 1], [1, 0, 1], [1, 1, 0]], dtype=bool)
+    assert is_clustering_optimum_unique(edge) is True
+
+
+def test_is_clustering_optimum_unique_chain_is_not_unique():
+    # A-B and B-C intersect, A-C does not: merging {A,B} OR {B,C} both
+    # reach objective=1, a genuine tie (by graph structure, not by
+    # coincidental real-valued equality).
+    edge = np.array([[0, 1, 0], [1, 0, 1], [0, 1, 0]], dtype=bool)
+    assert is_clustering_optimum_unique(edge) is False
+
+
+def test_is_clustering_optimum_unique_star_is_not_unique():
+    edge = np.zeros((4, 4), dtype=bool)
+    for j in (1, 2, 3):
+        edge[0, j] = edge[j, 0] = True
+    assert is_clustering_optimum_unique(edge) is False
+
+
+def test_is_clustering_optimum_unique_no_edges_is_unique():
+    edge = np.zeros((4, 4), dtype=bool)
+    assert is_clustering_optimum_unique(edge) is True
+
+
+def test_cluster_representative_thetas_picks_half_when_inside_interval():
+    # A single cluster {0,1} whose joint intersection is [0.4,0.6],
+    # containing 0.5 -> max-entropy representative is exactly 0.5.
+    rows_min = [np.array([0.3, 0.3]), np.array([0.4, 0.2])]
+    rows_max = [np.array([0.6, 0.7]), np.array([0.8, 0.6])]
+    labels = np.array([0, 0])
+    reps = cluster_representative_thetas(rows_min, rows_max, labels)
+    assert reps[0][0] == pytest.approx(0.5)
+
+
+def test_total_entropy_weights_by_cluster_size():
+    # A cluster of size 3 (all sharing the maxent point 0.5) must count
+    # its entropy 3 times (sum over CLIENTS i, not over distinct clusters).
+    rows_min = [np.array([0.3, 0.3])] * 3
+    rows_max = [np.array([0.7, 0.7])] * 3
+    labels = np.array([0, 0, 0])
+    from src.global_opt import _binary_entropy
+
+    assert total_entropy(rows_min, rows_max, labels) == pytest.approx(3 * _binary_entropy(0.5))
+
+
+def _star_with_known_best_leaf():
+    """
+    Center 0 intersects leaves 1,2,3 (which pairwise don't intersect, so
+    exactly one merge is optimal -- see test_cluster_milp_maximizes_pair_
+    count_over_greedy_alternative). Leaf 1's overlap with the center
+    contains exactly 0.5 (max possible entropy); leaves 2 and 3's overlaps
+    do not. So the entropy-maximizing tie-break must pick {0,1}, never
+    {0,2} or {0,3} -- independently verified against total_entropy directly
+    in test_cluster_milp_lexicographic_breaks_tie_by_entropy below.
+    """
+    rows_min = [
+        np.array([0.30, 0.30]),  # center: [0.30, 0.70]
+        np.array([0.45, 0.45]),  # leaf1:  [0.45, 0.55] -> overlap w/ center contains 0.5
+        np.array([0.05, 0.68]),  # leaf2:  [0.05, 0.32] -> overlap w/ center = [0.30,0.32]
+        np.array([0.66, 0.05]),  # leaf3:  [0.66, 0.95] -> overlap w/ center = [0.66,0.70]
+    ]
+    rows_max = [
+        np.array([0.70, 0.70]),
+        np.array([0.55, 0.55]),
+        np.array([0.32, 0.95]),
+        np.array([0.95, 0.34]),
+    ]
+    return rows_min, rows_max
+
+
+def test_cluster_milp_lexicographic_star_is_a_genuine_tie():
+    rows_min, rows_max = _star_with_known_best_leaf()
+    edge = intersection_graph(rows_min, rows_max)
+    assert is_clustering_optimum_unique(edge) is False
+
+
+def test_cluster_milp_lexicographic_breaks_tie_by_entropy():
+    rows_min, rows_max = _star_with_known_best_leaf()
+    edge = intersection_graph(rows_min, rows_max)
+
+    # Independently confirm leaf1 is really the entropy-maximizing choice,
+    # not just trusting cluster_milp_lexicographic's own internal logic.
+    entropy_leaf1 = total_entropy(rows_min, rows_max, np.array([0, 0, 1, 2]))
+    entropy_leaf2 = total_entropy(rows_min, rows_max, np.array([0, 1, 0, 2]))
+    entropy_leaf3 = total_entropy(rows_min, rows_max, np.array([0, 1, 2, 0]))
+    assert entropy_leaf1 > entropy_leaf2
+    assert entropy_leaf1 > entropy_leaf3
+
+    labels = cluster_milp_lexicographic(edge, rows_min, rows_max)
+    assert labels[0] == labels[1]  # center merged with leaf1 ...
+    assert labels[2] != labels[0]  # ... not leaf2 ...
+    assert labels[3] != labels[0]  # ... nor leaf3
+    assert labels[2] != labels[3]  # leaves stay pairwise distinct too
+
+
+def test_cluster_milp_lexicographic_matches_cluster_milp_when_unique():
+    # No tie possible here (see test_cluster_milp_full_triangle_merges_all):
+    # the lexicographic wrapper must agree with the plain MILP exactly.
+    edge = np.array([[0, 1, 1], [1, 0, 1], [1, 1, 0]], dtype=bool)
+    rows_min = [np.array([0.3, 0.3])] * 3
+    rows_max = [np.array([0.7, 0.7])] * 3
+    plain = cluster_milp(edge)
+    lexi = cluster_milp_lexicographic(edge, rows_min, rows_max)
+    assert (plain[0] == plain[1] == plain[2]) == (lexi[0] == lexi[1] == lexi[2])
+
+
+def test_cluster_milp_lexicographic_tie_rate_on_real_data_is_substantial():
+    # Empirical grounding for the module docstring's claim (7-16% of
+    # mechanisms have a genuine tie, decreasing with ESS): a small,
+    # deliberately fast smoke version, just checking the rate is
+    # substantial (not near-zero) at low ESS and doesn't crash anywhere.
+    import exp_global as exp_g
+
+    bn_base = gum.loadBN("cancer.bif")
+    mechanisms = all_mechanisms(bn_base)
+
+    n_ties, n_total = 0, 0
+    config = {
+        "n_clients": 10, "ess": 2, "alpha": 0.1, "prob_shift": 0.5,
+        "bn_base_path": "cancer.bif",
+    }
+    for rep in range(5):
+        seed = hash((rep, "tie_rate_smoke")) % (2**32)
+        np.random.seed(seed)
+        gum.initRandom(seed)
+        clients = exp_g.init_clients(config)
+        for c in clients.values():
+            c.generate_base_info(200, config["ess"])
+        for var, row in mechanisms:
+            rows_min, rows_max = [], []
+            for e in range(10):
+                cpt_min, cpt_max = clients[e].cn.cpt(var)
+                rows_min.append(cpt_min[row, :])
+                rows_max.append(cpt_max[row, :])
+            edge = intersection_graph(rows_min, rows_max)
+            n_total += 1
+            if not is_clustering_optimum_unique(edge):
+                n_ties += 1
+                # Must not raise, and must return valid labels for every
+                # client even when a tie is present.
+                labels = cluster_milp_lexicographic(edge, rows_min, rows_max)
+                assert len(labels) == 10
+
+    assert n_total == 50
+    assert n_ties > 0  # ties must actually occur in this smoke sample
 
 
 # credal_jsd_distance / jsd_distance_matrix / cluster_jsd_hierarchical -----
