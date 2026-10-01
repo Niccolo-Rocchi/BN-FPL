@@ -9,21 +9,19 @@ Each phase has its own script, config file, and plotting notebook:
 | Local learning & update | `exp_local.py` | `conf_local.yaml` | `plot_local.ipynb` | `results_local/` |
 | Global optimization | `exp_global.py` | `conf_global.yaml` | `plot_global.ipynb` | `results_global/` |
 
-The following pipeline describes how to run the code for either phase.
-
 ## Pipeline: full hyperparameter grid
-
-Compares MOSAIC against baselines across a grid of `n_clients`/`ess`/`prob_shift`/`alpha` for varying sample size. First, modify the relevant config file to set the grid. Then run code:
+The following pipeline describes how to run the code for either phase: the argument `<phase>` has to be replaced by `local` or `global`.
+It compares MOSAIC against baselines across a grid of `n_clients`/`ess`/`prob_shift`/`alpha` for varying sample size. First, modify the relevant config file to set the grid. Then run code:
 
 1. without Docker
 
 ```
-python <exp_name>.py
+python exp_<phase>.py
 ```
 2. with Docker
 
 ```
 docker build . -t bn-fpl
-docker run [-d] [--rm] -v ./results:/workspace/results bn-fpl python <exp_name>.py
+docker run [-d] [--rm] -v ./results_<phase>:/workspace/results_<phase> bn-fpl python exp_<phase>.py
 ```
 Results can be found under the `res_path` set in the config file (see table above). These can be plotted by running the matching notebook.
