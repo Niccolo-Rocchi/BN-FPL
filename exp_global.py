@@ -15,17 +15,11 @@ from src.utils import perturb_bn_params, snapshot_cpts
 n_jobs = exp_local.n_jobs
 GRID_KEYS = exp_local.GRID_KEYS
 
-# W-1 is excluded, same as the local learning & update phase's own plots
-# (cap6_extract.tex, Sec. "Local Learning & Update Phase Results"): it
-# behaves too similarly to W-2 to be worth a third curve.
+# W-1 excluded: it behaves too similarly to W-2 to be worth a third curve.
 WEIGHTING_SCHEMES = (2, 3)
 
-# One clustering method per client "source" evaluated by evaluate_mechanism/
-# evaluate_mechanism_mle (see src/global_opt.py): the two MOSAIC-updated
-# credal sets (one per weighting schema), the no-update ablation (plain
-# local IDM credal sets, isolating the local learning & update phase's own
-# contribution), and the naive MLE point-estimate baseline (oracle k, see
-# cluster_1d_wcss_optimal).
+# One method per client source: MOSAIC-updated (per weighting schema), the
+# no-update ablation, and the naive MLE baseline (oracle k).
 METHODS = tuple(f"mos_w{w}" for w in WEIGHTING_SCHEMES) + ("noupdate", "mle")
 
 METRIC_STATS = ("precision", "recall", "f1", "ari", "ami", "n_clusters_mean")
@@ -40,10 +34,8 @@ ROW_FIELDNAMES = (
 
 def init_clients(config) -> dict:
     """
-    Same perturbation as exp_local.py's init_clients, except ALL clients
-    (including client 0) are subject to `prob_shift`: the global phase's
-    ground truth is pairwise (see src/global_opt.ground_truth_labels), so no
-    client needs to stay a fixed, always-baseline anchor.
+    Every client, including client 0, is subject to `prob_shift`: the
+    ground truth is pairwise, so no client needs to stay a fixed anchor.
     """
     E = config["n_clients"]
     alpha = config["alpha"]
@@ -60,12 +52,8 @@ def init_clients(config) -> dict:
 
 def _network_metrics(mechanism_results: list) -> dict:
     """
-    mechanism_results: list of {"true_labels", "pred_labels"} dicts, one per
-    (var, row) mechanism. Precision/recall/F1 are pooled (micro-averaged)
-    over every client pair of every mechanism; ARI/AMI are computed per
-    mechanism, then macro-averaged (see src/global_opt.py's own docstrings
-    for why pairwise stats and partition-comparison stats need different
-    aggregations).
+    Precision/recall/F1 are pooled (micro-averaged) over every client pair
+    of every mechanism; ARI/AMI are computed per mechanism, then macro-averaged.
     """
     tp = fp = fn = 0
     aris, amis, n_clusters = [], [], []
@@ -94,8 +82,8 @@ def _network_metrics(mechanism_results: list) -> dict:
 
 def exp_global(config, n, rep) -> tuple:
     """
-    Fully self-contained (see exp_local.py's exp()): everything is read from
-    `config`, nothing from worker-global state.
+    Fully self-contained: everything is read from `config`, nothing from
+    worker-global state.
     """
     task_seed = hash((n, rep)) % (2**32)
     np.random.seed(task_seed)
@@ -119,18 +107,14 @@ def exp_global(config, n, rep) -> tuple:
 
     models = {}
 
-    # Ground-truth cluster count, for the "n_clusters_true_mean" diagnostic
-    # (independent of any method): computed once, via the no-update MOSAIC
-    # results below (their "true_labels" come straight from the masks).
-
-    # No-update ablation: local IDM credal sets K^e, before any cross-client
-    # update. Independent of weighting -> computed once.
+    # No-update ablation: local IDM credal sets, before any cross-client update.
     noupdate_results = [
         evaluate_mechanism(clients, var, r, cn_attr="cn") for var, r in mechanisms
     ]
     row.update(
         {f"noupdate_{k}": v for k, v in _network_metrics(noupdate_results).items()}
     )
+    # True cluster count, read straight from the perturbation masks.
     row["n_clusters_true_mean"] = float(
         np.mean([len(np.unique(res["true_labels"])) for res in noupdate_results])
     )
@@ -141,16 +125,11 @@ def exp_global(config, n, rep) -> tuple:
             models[f"client{e}_idm_max"] = snapshot_cpts(clients[e].cn.bn_max)
 
     # Naive point-estimate baseline: independent of weighting -> computed once.
-    mle_results = [
-        evaluate_mechanism_mle(clients, var, r) for var, r in mechanisms
-    ]
+    mle_results = [evaluate_mechanism_mle(clients, var, r) for var, r in mechanisms]
     row.update({f"mle_{k}": v for k, v in _network_metrics(mle_results).items()})
 
-    # MOSAIC, once per weighting schema. Every client is, in turn, the
-    # update's target (see init_clients docstring on why this differs from
-    # exp_local.py's single client_num); each pass overwrites every client's
-    # cn_mosaic in place, so the network-wide clustering evaluation for a
-    # given weighting must run before moving to the next one.
+    # MOSAIC, once per weighting schema: every client is, in turn, the
+    # update's target, overwriting its own cn_mosaic in place.
     for w in WEIGHTING_SCHEMES:
         for e in range(E):
             target = clients[e]
@@ -196,13 +175,11 @@ def main():
     config = load_config("conf_global.yaml")
     save_models = config.get("save_models", True)
     max_tasks_per_child = config.get("max_tasks_per_child", 100)
-    # Every client is a target in turn here (unlike exp_local.py's single
-    # client_num), so peak memory per task, and hence n_workers times that
-    # peak, is higher; cap it via conf_global.yaml's `max_workers` on a
-    # machine where cores are more plentiful than RAM (e.g. a VM sized for
-    # compute, not memory). Unset (the default) keeps exp_local.py's own
-    # behavior: n_jobs = CPU count - 1.
-    n_workers = min(n_jobs, config["max_workers"]) if config.get("max_workers") else n_jobs
+    # Every client is a target here, so peak memory per task is higher; cap
+    # it via conf_global.yaml's `max_workers` if cores exceed available RAM.
+    n_workers = (
+        min(n_jobs, config["max_workers"]) if config.get("max_workers") else n_jobs
+    )
 
     sizes_dict = config["s_sizes"]
     sizes = [

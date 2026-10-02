@@ -1,13 +1,6 @@
 """
-Tests for src/utils.py.
-
-Covers both the functions exercised by the current `exp_local.py`
-local learning & update pipeline (vertices_cset, check_intersection,
-get_bn_counts, perturb_bn_params, get_cpt_index/shape/tabular,
-get_min_max_bns, jsd_credal_stats, gt_containment_frac) and the broader
-utility library (mle_*, mne_*, ran_*, centroid_*, maxent_*,
-resample_bn_params) that isn't currently wired into either pipeline but is
-kept for other uses (notebooks, future work).
+Tests for src/utils.py: CPT helpers, credal-set geometry, perturbation,
+and the broader mle_*/mne_*/ran_*/centroid_*/maxent_* utility library.
 """
 
 import pickle
@@ -20,19 +13,16 @@ import pytest
 from src.config import set_seed
 from src.utils import (centroid_cn, centroid_cset, check_consistency,
                        check_intersection, credal_sets_intersect,
-                       get_bn_counts, get_cpt_index,
-                       get_cpt_shape, get_min_max_bns, get_parent_confs,
-                       get_tabular_cpt, gt_containment_frac, jsd,
-                       learn_bn_params, lookup_cpt_row, maxent_cn,
-                       maxent_cset, mle_bn_from_counts, mle_cn, mle_cset,
-                       mne_cn, mne_cset, perturb_bn_params, ran_cn, ran_cset,
-                       resample_bn_params, snapshot_cpts, vac_cn,
-                       vertices_cset)
+                       get_bn_counts, get_cpt_index, get_cpt_shape,
+                       get_min_max_bns, get_parent_confs, get_tabular_cpt,
+                       gt_containment_frac, jsd, learn_bn_params,
+                       lookup_cpt_row, maxent_cn, maxent_cset,
+                       mle_bn_from_counts, mle_cn, mle_cset, mne_cn, mne_cset,
+                       perturb_bn_params, ran_cn, ran_cset, resample_bn_params,
+                       snapshot_cpts, vac_cn, vertices_cset)
 
-# BIF-file round trips (used internally by get_min_max_bns / pyagrum's
-# CredalNet, see cap6_extract.tex investigation) truncate to ~6 significant
-# digits; this tolerance is used throughout wherever such a round trip is
-# in the path being tested.
+# BIF-file round trips (used internally by get_min_max_bns) truncate to
+# ~6 significant digits; used throughout wherever this is in the path.
 BIF_ATOL = 1e-5
 
 
@@ -49,9 +39,8 @@ def bn_with_parent():
 
 @pytest.fixture
 def bn_nonalpha():
-    # The real network used by exp_local.py; unlike bn_with_parent, its
-    # labels aren't alphabetically ordered, so it catches the
-    # topandas()-vs-native-declaration-order mismatch bn_with_parent cannot.
+    # Unlike bn_with_parent, labels here aren't alphabetically ordered,
+    # so it catches native-vs-sorted order mismatches.
     return gum.loadBN("cancer.bif")
 
 
@@ -86,9 +75,8 @@ def test_get_cpt_index_matches_row_order(bn_with_parent):
 
 
 def test_get_cpt_index_matches_raw_array_nonalpha_labels(bn_nonalpha):
-    # Regression test: for non-alphabetically-ordered labels, get_cpt_index's
-    # row number must index correctly into get_tabular_cpt's array, which
-    # follows pyagrum's native order, not topandas()'s alphabetical sort.
+    # Regression test: for non-alphabetical labels, get_cpt_index's row
+    # number must index correctly into get_tabular_cpt's native-order array.
     bn = bn_nonalpha
     cpt_min = get_tabular_cpt(bn.cpt("C"))  # C | P, S: 2 parents, 4 rows
     for i, parents in enumerate(get_parent_confs(bn, "C")):
@@ -125,9 +113,8 @@ def test_vertices_cset_within_bounds_and_valid_distributions():
 
 
 def test_vertices_cset_binary_known_case():
-    # For 2 categories the credal set [min,max] x [min,max] (Delta-restricted)
-    # collapses to exactly two vertices: (min0, 1-min0) and (1-min1, min1),
-    # i.e. (vec_min[0], vec_max[1]) and (vec_max[0], vec_min[1]).
+    # For 2 categories the credal set collapses to exactly two vertices:
+    # (vec_min[0], vec_max[1]) and (vec_max[0], vec_min[1]).
     vec_min = np.array([0.2, 0.3])
     vec_max = np.array([0.5, 0.8])
     vertices = vertices_cset(vec_min, vec_max)
@@ -141,9 +128,8 @@ def test_vertices_cset_degenerate_is_2d_and_matches_point():
     vec = np.array([0.2, 0.5, 0.3])
     vertices = vertices_cset(vec, vec.copy())
 
-    # Regression test: this used to return a 1D array, breaking any caller
-    # that indexes vertices by row (check_intersection, ran_cset,
-    # centroid_cset, mne_cset).
+    # Regression test: this used to return a 1D array, breaking any
+    # caller that indexes vertices by row.
     assert vertices.shape == (1, 3)
     assert np.allclose(vertices[0], vec)
 
@@ -172,8 +158,7 @@ def test_check_intersection_degenerate_credal_sets():
 
 
 # credal_sets_intersect: fast O(1) binary-variable path, cross-checked
-# against the general vertices_cset+check_intersection route on the exact
-# same cases as above (it must agree everywhere, only faster).
+# against the general vertices_cset+check_intersection route above.
 
 
 def test_credal_sets_intersect_binary_matches_check_intersection():
@@ -256,9 +241,8 @@ def test_perturb_bn_params_mask_matches_changed_rows(bn_with_parent):
 
 
 def test_perturb_bn_params_actually_changes_perturbed_rows(bn_with_parent):
-    # With prob=1 and a small alpha (i.e. a large shift), rows must differ
-    # from the original (statistically certain, not run-dependent given the
-    # fixed seed).
+    # With prob=1 and a small alpha (large shift), rows must differ from
+    # the original.
     bn_new, _ = perturb_bn_params(bn_with_parent, alpha=2, prob=1.0)
     for var in bn_with_parent.names():
         cpt_orig = get_tabular_cpt(bn_with_parent.cpt(var))
@@ -377,9 +361,8 @@ def test_get_bn_counts_total_equals_sample_size(bn_with_parent):
 
 
 def test_get_bn_counts_matches_direct_counting_nonalpha_labels(bn_nonalpha):
-    # Regression test on the real cancer.bif network: get_bn_counts must
-    # assign counts to the correct physical row/column, not the
-    # topandas()-sorted one.
+    # Regression test on cancer.bif: get_bn_counts must assign counts to
+    # the correct physical row/column, not a sorted one.
     bn = bn_nonalpha
     gen = gum.BNDatabaseGenerator(bn)
     gen.drawSamples(500)
@@ -462,9 +445,8 @@ def test_mle_bn_from_counts_defaults_to_uniform_when_unobserved():
     assert np.allclose(got_y[1], [2 / 3, 0.0, 1 / 3])
 
 
-# learn_bn_params: sanity (converges to the generating distribution, given
-# enough data; with only the 1e-6 smoothing prior the deviation must be
-# tiny).
+# learn_bn_params: sanity, converges to the generating distribution given
+# enough data.
 
 
 def test_learn_bn_params_close_to_ground_truth_at_large_n():
@@ -526,9 +508,8 @@ def test_mle_cn_is_consistent_with_credal_net(bn_with_parent):
 
 
 def test_mle_cpt_row_alignment_nonalpha_labels(bn_nonalpha):
-    # Regression test (deterministic): mle_cpt used to read via
-    # cpt.topandas() (alphabetically-sorted rows), silently wrong once
-    # mle_cn writes it back via .fillWith() (native-order rows).
+    # Regression test: mle_cpt used to read rows in a different order
+    # than mle_cn writes them back in.
     from src.utils import mle_cpt
 
     bn = bn_nonalpha  # cancer.bif
@@ -554,9 +535,8 @@ def test_mle_cpt_row_alignment_nonalpha_labels(bn_nonalpha):
     assert np.allclose(result, expected, atol=1e-3)  # cvxpy solver tolerance
 
 
-# mne_cset / mne_cpt / mne_cn: worst-case (minimum likelihood) vertex.
-# Regression test for the log(0)-handling bug: a vertex assigning zero
-# probability to an observed category must be recognized as infinitely unlikely.
+# mne_cset/mne_cpt/mne_cn: worst-case vertex, including the log(0) edge
+# case where a vertex puts zero probability on an observed category.
 
 
 def test_mne_cset_picks_true_worst_case_vertex_with_zero_probability():
@@ -569,9 +549,8 @@ def test_mne_cset_picks_true_worst_case_vertex_with_zero_probability():
 
 
 def test_mne_cset_matches_brute_force_when_no_zero_probability():
-    # Away from the zero-probability edge case, mne_cset's vertex-search must
-    # agree with a brute-force grid search over the (1D, since binary)
-    # feasible segment.
+    # Away from the zero-probability edge case, mne_cset's vertex-search
+    # must agree with a brute-force grid search over the feasible segment.
     vec_min, vec_max = np.array([0.2, 0.3]), np.array([0.6, 0.8])
     counts = np.array([9.0, 1.0])
 
@@ -718,9 +697,8 @@ def test_jsd_is_bounded_in_0_1():
     assert 0.0 <= d <= 1.0 + 1e-9
 
 
-# gt_containment_frac: fraction of (variable, parent-config) mechanisms
-# where a ground-truth BN's own CPT is componentwise within [bn_min, bn_max],
-# the empirical check for "Reliability of credal sets" (cap6_extract.tex).
+# gt_containment_frac: fraction of (variable, parent-config) mechanisms where
+# the ground-truth CPT falls componentwise inside [bn_min, bn_max].
 
 
 def test_gt_containment_frac_is_1_when_gt_equals_bounds():
@@ -753,9 +731,8 @@ def test_gt_containment_frac_is_0_when_entirely_outside():
 
 
 def test_gt_containment_frac_is_per_entry_not_per_row():
-    # A single row with only ONE of its 2 categories outside its bound
-    # contributes partial (not zero) credit: containment is counted per
-    # CPT entry (variable, parent-config, category), not per whole row.
+    # Containment is counted per CPT entry, not per row: a row with only
+    # one of its 2 categories outside its bound earns partial credit.
     bn = gum.fastBN("A[2]")
     bn.cpt("A").fillWith([0.9, 0.1])
     bn_min = gum.BayesNet(bn)
@@ -766,9 +743,8 @@ def test_gt_containment_frac_is_per_entry_not_per_row():
 
 
 def test_gt_containment_frac_counts_per_variable_correctly():
-    # Two (unconnected) root variables, each with 2 entries: A's row (both
-    # entries outside) contributes 0/2, B's row (both entries inside)
-    # contributes 2/2, overall 2/4.
+    # Two unconnected root variables: A's row (both entries outside)
+    # contributes 0/2, B's row (both inside) contributes 2/2, overall 2/4.
     bn = gum.fastBN("A[2];B[2]")
     bn.cpt("A").fillWith([0.9, 0.1])
     bn.cpt("B").fillWith([0.5, 0.5])
@@ -783,10 +759,8 @@ def test_gt_containment_frac_counts_per_variable_correctly():
 
 
 def test_gt_containment_frac_uses_native_row_order_on_nonalpha_network(bn_nonalpha):
-    # Regression check for the topandas()-vs-native-order pitfall: gt,
-    # bn_min, and bn_max here all come from get_tabular_cpt (native pyagrum
-    # order), so containment must be assessed row-for-row correctly on a
-    # network whose labels are NOT alphabetically ordered (see bn_nonalpha).
+    # Regression test: containment must be assessed row-for-row correctly
+    # even when a network's labels are not alphabetically ordered.
     bn_min, bn_max = gum.BayesNet(bn_nonalpha), gum.BayesNet(bn_nonalpha)
     for var in bn_nonalpha.names():
         cpt = get_tabular_cpt(bn_nonalpha.cpt(var))
@@ -825,9 +799,8 @@ def test_snapshot_cpts_is_independent_copy(bn_with_parent):
 
 
 def test_snapshot_cpts_row_column_labels_match_ground_truth_nonalpha(bn_nonalpha):
-    # Regression test on the real cancer.bif network: the saved
-    # "parents"/"labels" metadata must let a reader reconstruct
-    # P(X=x|pi_X) correctly, without falling back to cpt.topandas().
+    # Regression test: the saved "parents"/"labels" metadata must let a
+    # reader reconstruct P(X=x|pi_X) without falling back to cpt.topandas().
     bn = bn_nonalpha
     snap = snapshot_cpts(bn)
 
@@ -852,8 +825,7 @@ def test_snapshot_cpts_row_column_labels_match_ground_truth_nonalpha(bn_nonalpha
 
 
 # lookup_cpt_row: the reference way to read a value back out of a
-# snapshot_cpts() entry, tested on a fixed network, on genuinely random
-# networks, and on the real Cancer network with hand-verified ground truth.
+# snapshot_cpts() entry, tested on fixed, random, and real networks.
 
 
 def test_lookup_cpt_row_root_variable(bn_with_parent):
@@ -881,9 +853,8 @@ def test_lookup_cpt_row_unknown_parents_raises(bn_with_parent):
 
 
 def test_lookup_cpt_row_on_random_networks():
-    # "Reti randomiche": genuinely random STRUCTURE (not just fixed
-    # structure with default values), across several independent draws, so
-    # correctness isn't accidentally specific to one topology.
+    # Genuinely random structure, not just fixed structure with random
+    # values, so correctness isn't accidentally specific to one topology.
     for trial in range(10):
         bn_gen = gum.BNGenerator()
         bn = bn_gen.generate(n_nodes=6, n_arcs=8, n_modmax=4)
@@ -917,9 +888,8 @@ def test_lookup_cpt_row_matches_ground_truth_on_cancer_network(bn_nonalpha):
     assert np.allclose(lookup_cpt_row(snap["S"]), [0.3, 0.7])
 
 
-# Full round trip: snapshot -> pickle.dumps -> pickle.loads -> lookup_cpt_row,
-# cross-checked against directly querying the same live BN, both on the real
-# Cancer network (with a genuine parameter perturbation) and on random networks.
+# Full round trip (snapshot, pickle, lookup_cpt_row), cross-checked against
+# directly querying the same live BN, on both a real and a random network.
 
 
 def test_snapshot_pickle_roundtrip_matches_live_model_on_cancer_network():

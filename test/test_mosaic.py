@@ -19,9 +19,8 @@ from src.config import set_seed
 from src.mosaic import CN, CN_CPT, Client, PriorCN
 from src.utils import get_cpt_shape, jsd
 
-# See test_utils.py: pyagrum's BIF writer (used internally whenever a CN is
-# built from a gum.CredalNet, e.g. Client.learn_cn) truncates to ~6
-# significant digits.
+# pyagrum's BIF writer, used internally by Client.learn_cn, truncates to
+# ~6 significant digits.
 BIF_ATOL = 1e-5
 
 
@@ -217,8 +216,6 @@ def test_prior_weighting2_excludes_non_overlapping_candidate():
 
 def test_prior_weighting2_no_overlap_falls_back_to_vacuous_row():
     # Regression test for the vacuous-prior bug (used to produce (0,0)).
-    # Whether this case also emits a warning is not checked here: that's a
-    # pure UX/logging choice, not part of the behavior this test guards.
     target = _make_client_with_cset(*_seg(0.02, 0.08))
     c1 = _make_client_with_cset(*_seg(0.8, 0.9))
     c2 = _make_client_with_cset(*_seg(0.65, 0.78))
@@ -291,10 +288,8 @@ def test_prior_weighting3_matches_hand_computed_maxjsd_weights():
 
 
 def test_prior_weighting3_favors_narrow_close_over_wide_containing():
-    # Regression test for the "containment" critique: a wide candidate that
-    # merely CONTAINS the target's MLE must not automatically outweigh a
-    # narrow candidate close to it, unlike a raw intersection-measure
-    # scheme (mu(K^e cap K^i)), which rewards width per se.
+    # A wide candidate that merely contains the target's MLE must not
+    # automatically outweigh a narrow candidate close to it.
     target = _make_client_with_cset([0.4, 0.4], [0.6, 0.6], mle=[0.5, 0.5])
     c1 = _make_client_with_cset([0.48, 0.48], [0.52, 0.52])  # narrow, close
     c2 = _make_client_with_cset([0.1, 0.1], [0.9, 0.9])  # wide, contains target's MLE
@@ -360,10 +355,8 @@ def test_prior_cn_median_over_two_variable_network():
     assert median == 0.0
 
 
-# Regression test for the memory bug fixed by _client_snapshot: set_clients
-# used to copy.deepcopy() each full candidate Client, which recursively
-# dragged along prior_cn/cn_mosaic and blew up memory once a client had
-# already been an update target (confirmed: std::bad_alloc under a 2GB cap).
+# Regression test for the memory bug fixed by _client_snapshot: a full
+# deepcopy of each candidate Client used to blow up memory over repeats.
 def test_set_clients_does_not_blow_up_memory_across_repeated_targets():
     import resource
     import time
@@ -386,9 +379,8 @@ def test_set_clients_does_not_blow_up_memory_across_repeated_targets():
         target.prior_cn.compute(prior_clients, weighting=2)
     elapsed = time.time() - start
 
-    # Exponential blowup would take far longer than this on any machine
-    # (the pre-fix version did not even finish within a 30s timeout at
-    # E=5); a generous bound is used to stay robust across machines.
+    # Exponential blowup would take far longer than this; the bound is
+    # generous to stay robust across machines.
     assert elapsed < 15.0
     assert resource.getrusage(resource.RUSAGE_SELF).ru_maxrss < 1_500_000  # ~1.5GB
 
@@ -397,10 +389,8 @@ def test_set_clients_does_not_blow_up_memory_across_repeated_targets():
 
 
 def test_get_cset_root_variable_shape():
-    # For a root variable (no parents) with parents=None, get_cset falls
-    # through to a single-row lookup (get_cpt_index returns 0), so the
-    # result is the 1D row, not the 2D "all rows" shape used when `var`
-    # has parents.
+    # A root variable with parents=None returns the 1D row directly, not
+    # the 2D "all rows" shape used when `var` has parents.
     c = _make_client_with_cset([0.2, 0.3], [0.6, 0.7])
     cpt_min, cpt_max = c.get_cset("X")
     assert cpt_min.shape == (2,)

@@ -1,10 +1,8 @@
 """
-Tests for src/global_opt.py: the global optimization phase (clustering
-clients per mechanism via the full lexicographic alpha-then-beta
-procedure). See the module's own docstring for the Helly's-theorem
-argument behind cluster_milp and for why the beta (entropy) stage is not
-just a theoretical nicety: ties in the alpha term are common (7-16% of
-mechanisms on real data), not a negligible edge case.
+Tests for src/global_opt.py: clustering clients per mechanism via the
+lexicographic procedure (Eq. eq:global_opt's lambda_1 term first, lambda_2
+only to break ties). See the module's own docstring for the Helly's-theorem
+argument behind cluster_milp and for why ties are common, not negligible.
 """
 
 import numpy as np
@@ -14,12 +12,12 @@ import pytest
 from src.global_opt import (all_mechanisms, ari_ami, cluster_1d_wcss_optimal,
                             cluster_jsd_hierarchical, cluster_milp,
                             cluster_milp_lexicographic,
-                            cluster_representative_thetas,
-                            credal_jsd_distance, evaluate_mechanism,
-                            evaluate_mechanism_mle, ground_truth_labels,
-                            intersection_graph, is_clustering_optimum_unique,
-                            jsd_distance_matrix, pairwise_confusion,
-                            precision_recall_f1, total_entropy)
+                            cluster_representative_thetas, credal_jsd_distance,
+                            evaluate_mechanism, evaluate_mechanism_mle,
+                            ground_truth_labels, intersection_graph,
+                            is_clustering_optimum_unique, jsd_distance_matrix,
+                            pairwise_confusion, precision_recall_f1,
+                            total_entropy)
 from src.mosaic import CN, CN_CPT, Client
 from src.utils import get_cpt_shape, jsd
 
@@ -77,9 +75,8 @@ def test_cluster_milp_full_triangle_merges_all():
 
 
 def test_cluster_milp_chain_does_not_over_merge():
-    # A-B and B-C intersect, A-C does not: no common point for all three
-    # (Helly), so the optimal delta merges only ONE of the two edges, never
-    # all three clients together.
+    # A-B and B-C intersect, A-C does not: by Helly, no common point exists
+    # for all three, so the optimal delta merges only one of the two edges.
     edge = np.array([[0, 1, 0], [1, 0, 1], [0, 1, 0]], dtype=bool)
     labels = cluster_milp(edge)
     assert len(set(labels.tolist())) == 2  # exactly one merge, one singleton
@@ -105,12 +102,8 @@ def test_cluster_milp_two_separate_cliques():
 
 
 def test_cluster_milp_maximizes_pair_count_over_greedy_alternative():
-    # A "star": center 0 intersects 1,2,3, but 1,2,3 pairwise don't. Naive
-    # connected components would merge all 4 (infeasible, no common point
-    # for {0,1,2,3} let alone {1,2,3}); the MILP must instead pick exactly
-    # one spoke to merge with the center (objective=1), since merging any
-    # two spokes together (without the center) is not allowed (no edge) and
-    # merging 3+ clients requires ALL pairs among them to intersect.
+    # A "star": center 0 intersects 1,2,3, but 1,2,3 pairwise don't. The MILP
+    # must pick exactly one spoke to merge, not fall back to connected components.
     edge = np.zeros((4, 4), dtype=bool)
     for j in (1, 2, 3):
         edge[0, j] = edge[j, 0] = True
@@ -120,9 +113,7 @@ def test_cluster_milp_maximizes_pair_count_over_greedy_alternative():
 
 
 # is_clustering_optimum_unique / cluster_representative_thetas /
-# total_entropy / cluster_milp_lexicographic: the full two-stage
-# lexicographic procedure (alpha term first, beta term only to break ties;
-# see the module docstring for why ties are common, not negligible).
+# total_entropy / cluster_milp_lexicographic: the two-stage procedure.
 
 
 def test_is_clustering_optimum_unique_triangle_is_unique():
@@ -133,9 +124,8 @@ def test_is_clustering_optimum_unique_triangle_is_unique():
 
 
 def test_is_clustering_optimum_unique_chain_is_not_unique():
-    # A-B and B-C intersect, A-C does not: merging {A,B} OR {B,C} both
-    # reach objective=1, a genuine tie (by graph structure, not by
-    # coincidental real-valued equality).
+    # A-B and B-C intersect, A-C does not: merging {A,B} or {B,C} both
+    # reach objective=1, a genuine tie from graph structure.
     edge = np.array([[0, 1, 0], [1, 0, 1], [0, 1, 0]], dtype=bool)
     assert is_clustering_optimum_unique(edge) is False
 
@@ -170,7 +160,9 @@ def test_total_entropy_weights_by_cluster_size():
     labels = np.array([0, 0, 0])
     from src.global_opt import _binary_entropy
 
-    assert total_entropy(rows_min, rows_max, labels) == pytest.approx(3 * _binary_entropy(0.5))
+    assert total_entropy(rows_min, rows_max, labels) == pytest.approx(
+        3 * _binary_entropy(0.5)
+    )
 
 
 def _star_with_known_best_leaf():
@@ -184,9 +176,15 @@ def _star_with_known_best_leaf():
     """
     rows_min = [
         np.array([0.30, 0.30]),  # center: [0.30, 0.70]
-        np.array([0.45, 0.45]),  # leaf1:  [0.45, 0.55] -> overlap w/ center contains 0.5
-        np.array([0.05, 0.68]),  # leaf2:  [0.05, 0.32] -> overlap w/ center = [0.30,0.32]
-        np.array([0.66, 0.05]),  # leaf3:  [0.66, 0.95] -> overlap w/ center = [0.66,0.70]
+        np.array(
+            [0.45, 0.45]
+        ),  # leaf1:  [0.45, 0.55] -> overlap w/ center contains 0.5
+        np.array(
+            [0.05, 0.68]
+        ),  # leaf2:  [0.05, 0.32] -> overlap w/ center = [0.30,0.32]
+        np.array(
+            [0.66, 0.05]
+        ),  # leaf3:  [0.66, 0.95] -> overlap w/ center = [0.66,0.70]
     ]
     rows_max = [
         np.array([0.70, 0.70]),
@@ -234,10 +232,8 @@ def test_cluster_milp_lexicographic_matches_cluster_milp_when_unique():
 
 
 def test_cluster_milp_lexicographic_tie_rate_on_real_data_is_substantial():
-    # Empirical grounding for the module docstring's claim (7-16% of
-    # mechanisms have a genuine tie, decreasing with ESS): a small,
-    # deliberately fast smoke version, just checking the rate is
-    # substantial (not near-zero) at low ESS and doesn't crash anywhere.
+    # Fast smoke check that the tie rate is substantial (not near-zero)
+    # at low ESS, grounding the module docstring's claim.
     import exp_global as exp_g
 
     bn_base = gum.loadBN("cancer.bif")
@@ -245,7 +241,10 @@ def test_cluster_milp_lexicographic_tie_rate_on_real_data_is_substantial():
 
     n_ties, n_total = 0, 0
     config = {
-        "n_clients": 10, "ess": 2, "alpha": 0.1, "prob_shift": 0.5,
+        "n_clients": 10,
+        "ess": 2,
+        "alpha": 0.1,
+        "prob_shift": 0.5,
         "bn_base_path": "cancer.bif",
     }
     for rep in range(5):
@@ -280,7 +279,10 @@ def test_cluster_milp_lexicographic_tie_rate_on_real_data_is_substantial():
 def test_credal_jsd_distance_zero_when_intersecting():
     # Category-0 segments [0.2, 0.5] and [0.4, 0.7] overlap on [0.4, 0.5].
     d = credal_jsd_distance(
-        np.array([0.2, 0.5]), np.array([0.5, 0.8]), np.array([0.4, 0.3]), np.array([0.7, 0.6])
+        np.array([0.2, 0.5]),
+        np.array([0.5, 0.8]),
+        np.array([0.4, 0.3]),
+        np.array([0.7, 0.6]),
     )
     assert d == 0.0
 
@@ -289,7 +291,9 @@ def test_credal_jsd_distance_matches_closest_boundary_points_when_disjoint():
     min1, max1 = np.array([0.1, 0.85]), np.array([0.15, 0.9])
     min2, max2 = np.array([0.5, 0.3]), np.array([0.7, 0.5])
     d = credal_jsd_distance(min1, max1, min2, max2)
-    expected = jsd([0.15, 0.85], [0.5, 0.5])  # closest points: 0.15 (max1) vs 0.5 (min2)
+    expected = jsd(
+        [0.15, 0.85], [0.5, 0.5]
+    )  # closest points: 0.15 (max1) vs 0.5 (min2)
     assert d == pytest.approx(expected)
 
 
@@ -404,9 +408,7 @@ def test_cluster_1d_wcss_optimal_invariant_to_input_order():
     labels_perm = cluster_1d_wcss_optimal(values[perm], k=3)
 
     # Same clustering, up to the permutation and up to a relabeling.
-    pairs_orig = {
-        (i, j) for i in range(8) for j in range(8) if labels[i] == labels[j]
-    }
+    pairs_orig = {(i, j) for i in range(8) for j in range(8) if labels[i] == labels[j]}
     pairs_perm = {
         (perm[i], perm[j])
         for i in range(8)
@@ -417,11 +419,8 @@ def test_cluster_1d_wcss_optimal_invariant_to_input_order():
 
 
 def test_cluster_1d_wcss_optimal_matches_brute_force_on_random_inputs():
-    # Regression test: an earlier version of this function cut the k-1
-    # LARGEST GAPS between sorted values instead of solving for the true
-    # WCSS optimum (a different criterion, maximizing the smallest
-    # inter-cluster gap instead), found strictly WCSS-suboptimal in ~20%
-    # of random small inputs by this exact check.
+    # Regression test: an earlier version cut the k-1 largest gaps between
+    # sorted values instead of solving for the true WCSS optimum.
     rng = np.random.default_rng(1)
     for _ in range(200):
         n = int(rng.integers(4, 8))
@@ -520,7 +519,9 @@ def _binary_client(p0_min, p0_max, mask_row_value, mle=None):
     bn_max.cpt("X").fillWith([p0_max, 1 - p0_min])
 
     cn = CN.__new__(CN)
-    cn.cpts = {"X": CN_CPT("X", get_cpt_shape(bn.cpt("X")), (bn_min.cpt("X"), bn_max.cpt("X")))}
+    cn.cpts = {
+        "X": CN_CPT("X", get_cpt_shape(bn.cpt("X")), (bn_min.cpt("X"), bn_max.cpt("X")))
+    }
     cn.bn_min, cn.bn_max, cn.cn = bn_min, bn_max, None
     cn.bn_min.setProperty("name", "bn_min")
     cn.bn_max.setProperty("name", "bn_max")
@@ -537,9 +538,8 @@ def _binary_client(p0_min, p0_max, mask_row_value, mle=None):
 
 
 def test_evaluate_mechanism_matches_hand_crafted_ground_truth_and_clusters():
-    # Clients 0,1 kept the baseline row (mask=1) -> ground truth: same
-    # cluster. Client 2 was perturbed (mask=0) -> its own singleton,
-    # EVEN THOUGH its credal set still happens to overlap client 0's.
+    # Clients 0,1 kept the baseline row -> same cluster. Client 2 was
+    # perturbed -> its own singleton, even though its set overlaps client 0's.
     clients = {
         0: _binary_client(0.2, 0.3, mask_row_value=1),
         1: _binary_client(0.2, 0.3, mask_row_value=1),
@@ -552,7 +552,9 @@ def test_evaluate_mechanism_matches_hand_crafted_ground_truth_and_clusters():
     assert result["true_labels"][2] != result["true_labels"][0]
     # Predicted: all three pairwise intersect (0-1 identical, 0-2 and 1-2
     # overlap via [0.25,0.3]), so MILP correctly merges all three too.
-    assert result["pred_labels"][0] == result["pred_labels"][1] == result["pred_labels"][2]
+    assert (
+        result["pred_labels"][0] == result["pred_labels"][1] == result["pred_labels"][2]
+    )
 
 
 def test_evaluate_mechanism_mle_uses_oracle_k_from_ground_truth():

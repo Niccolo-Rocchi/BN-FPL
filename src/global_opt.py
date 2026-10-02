@@ -1,28 +1,21 @@
 """
-Server-side global optimization phase (cap6_extract.tex, Sec. "Global
-Optimization", Eq. eq:global_opt), solved independently per mechanism X|pi_X
-(the credal network is locally and separately specified).
+Server-side global optimization (cap6_extract.tex, Eq. eq:global_opt),
+solved independently per mechanism X|pi_X.
 
-For a binary variable, a CPT row's credal set is a 1-D interval, so Helly's
-theorem applies: a set of intervals shares a common point iff every pair of
-them does. This makes the alpha term ("maximize sum(delta_ij) subject to
-delta=1 implying a shared theta") solvable as an exact correlation-clustering
-MILP (cluster_milp): the transitivity constraints plus pairwise-intersection
-bounds force every cluster to be a clique, which by Helly has a non-empty
-joint intersection. Plain connected components lack this guarantee (three
-intervals can be pairwise-chained without a common point), so are not used.
+For a binary variable, a CPT row's credal set is a 1-D interval, so
+Helly's theorem applies: intervals share a common point iff every pair
+does. This makes the first term of Eq. eq:global_opt (maximize
+sum(delta_ij), s.t. delta=1 implies a shared theta) solvable as an exact
+correlation-clustering MILP (cluster_milp): transitivity plus pairwise-
+intersection bounds force every cluster into a Helly clique. Plain
+connected components lack this guarantee, so are not used.
 
-The full objective (alpha and beta both positive) is solved as the
-LEXICOGRAPHIC limit alpha >> beta, not a literal weighted sum: first
-maximize the alpha term alone, then, only among tied-optimal partitions,
-break ties by the beta term (summed entropy of each cluster's
-representative, see cluster_milp_lexicographic). This matches
-cap6_extract.tex's own prose ("the entropy term selects, among all possible
-parameter sets, the least committal ones") and avoids having to justify a
-numeric alpha/beta ratio. Ties are not a vacuous edge case: they occur in
-7-16% of mechanisms on real Cancer-network data, driven by the discrete
-graph structure (e.g. a "hub" client whose credal set intersects two
-mutually non-intersecting others), not by floating-point coincidence.
+With lambda_1=lambda_2=1, the full objective is solved lexicographically,
+not as a weighted sum: maximize the first term alone, then, only among
+tied-optimal partitions, break ties by the second term (summed entropy of
+each cluster's representative, see cluster_milp_lexicographic). Ties are
+common (7-16% of mechanisms on real data), driven by discrete graph
+structure rather than coincidence, so this second stage matters.
 """
 
 import itertools
@@ -35,9 +28,8 @@ from sklearn.metrics import adjusted_mutual_info_score, adjusted_rand_score
 from src.utils import credal_sets_intersect, get_tabular_cpt, jsd, maxent_cset
 
 
-# Per-row ground-truth cluster labels from the clients' perturbation masks
-# (see perturb_bn_params): mask=1 clients all share bn_base's theta (one
-# cluster); each mask=0 client got its own independent draw (singleton).
+# Per-row ground-truth labels from the perturbation masks: mask=1 clients
+# share one cluster, each mask=0 client is its own singleton cluster.
 def ground_truth_labels(mask_row: np.array) -> np.array:
     mask_row = np.asarray(mask_row, dtype=bool)
     labels = np.arange(1, len(mask_row) + 1)
@@ -58,10 +50,8 @@ def intersection_graph(rows_min: list, rows_max: list) -> np.array:
     return edge
 
 
-# Soft alternative to the hard intersection test: the minimum JS divergence
-# between any point of one credal set and any point of the other (0 exactly
-# when they intersect). Closed-form for binary X, since JSD between two
-# Bernoulli distributions is monotonic in |p-q|.
+# Soft alternative to the hard intersection test: minimum JS divergence
+# between any point of one credal set and the other (0 when they intersect).
 def credal_jsd_distance(
     cpt_min_1: np.array, cpt_max_1: np.array, cpt_min_2: np.array, cpt_max_2: np.array
 ) -> float:
@@ -85,8 +75,7 @@ def jsd_distance_matrix(rows_min: list, rows_max: list) -> np.array:
 
 
 # Clusters E clients from a JSD-distance matrix given the true cluster
-# count k as an oracle. Complete linkage keeps every cluster mutually
-# close, avoiding the "chain" pathology single linkage would allow.
+# count k as an oracle. Complete linkage keeps every cluster mutually close.
 def cluster_jsd_hierarchical(dist: np.array, k: int) -> np.array:
     E = dist.shape[0]
     if k <= 1 or E <= 1:
@@ -98,10 +87,8 @@ def cluster_jsd_hierarchical(dist: np.array, k: int) -> np.array:
     return model.fit_predict(dist)
 
 
-# Builds the correlation-clustering MILP shared by cluster_milp and
-# is_clustering_optimum_unique: binary z_ij (one per client pair, "same
-# cluster"), upper-bounded by the intersection graph (z_ij<=1 only where
-# credal sets actually intersect) and constrained to be transitive.
+# Builds the correlation-clustering MILP: binary z_ij ("same cluster"),
+# bounded by the intersection graph and constrained to be transitive.
 def _build_correlation_milp(edge: np.array):
     E = edge.shape[0]
     pairs = list(itertools.combinations(range(E), 2))
@@ -125,9 +112,8 @@ def _build_correlation_milp(edge: np.array):
     return c, bounds, integrality, constraints, pairs
 
 
-# Exact MILP solution for "maximize sum(delta_ij) s.t. delta=1 implies a
-# common theta": correlation clustering restricted to pairs that intersect,
-# with transitivity constraints. Every cluster is then a genuine Helly clique.
+# Exact MILP solution for the clustering term of Eq. eq:global_opt: each
+# resulting cluster is a genuine Helly clique (see module docstring).
 def cluster_milp(edge: np.array) -> np.array:
     E = edge.shape[0]
     if E < 2:
@@ -142,9 +128,8 @@ def cluster_milp(edge: np.array) -> np.array:
     return _labels_from_pairs(E, pairs, z)
 
 
-# Full two-stage lexicographic procedure (see module docstring): matches
-# cluster_milp's optimum, then picks the tied partition (enumerated exactly
-# via no-good cuts, capped at max_ties) maximizing total_entropy.
+# Full lexicographic procedure: matches cluster_milp's optimum, then picks
+# the tied partition maximizing total_entropy (ties enumerated exactly).
 def cluster_milp_lexicographic(
     edge: np.array, rows_min: list, rows_max: list, max_ties: int = 200
 ) -> np.array:
@@ -158,7 +143,9 @@ def cluster_milp_lexicographic(
 
     res = milp(c, integrality=integrality, bounds=bounds, constraints=cur_constraints)
     if not res.success:
-        raise RuntimeError(f"cluster_milp_lexicographic: MILP solve failed ({res.message}).")
+        raise RuntimeError(
+            f"cluster_milp_lexicographic: MILP solve failed ({res.message})."
+        )
     obj_star = -res.fun
 
     P = len(pairs)
@@ -171,7 +158,9 @@ def cluster_milp_lexicographic(
         cur_constraints = cur_constraints + [
             LinearConstraint(cut_row.reshape(1, P), -np.inf, cut_rhs)
         ]
-        res = milp(c, integrality=integrality, bounds=bounds, constraints=cur_constraints)
+        res = milp(
+            c, integrality=integrality, bounds=bounds, constraints=cur_constraints
+        )
 
     if len(candidates) == 1:
         return _labels_from_pairs(E, pairs, candidates[0])
@@ -185,10 +174,8 @@ def cluster_milp_lexicographic(
     return best_labels
 
 
-# Whether cluster_milp's solution is the unique maximizer of sum(delta_ij),
-# checked by re-solving with a no-good cut excluding it and comparing
-# objectives. Standalone diagnostic; cluster_milp_lexicographic does this
-# itself rather than calling it.
+# Whether cluster_milp's solution is the unique maximizer, checked by
+# re-solving with a no-good cut excluding it and comparing objectives.
 def is_clustering_optimum_unique(edge: np.array) -> bool:
     E = edge.shape[0]
     if E < 3:
@@ -197,7 +184,9 @@ def is_clustering_optimum_unique(edge: np.array) -> bool:
     c, bounds, integrality, constraints, pairs = _build_correlation_milp(edge)
     first = milp(c, integrality=integrality, bounds=bounds, constraints=constraints)
     if not first.success:
-        raise RuntimeError(f"is_clustering_optimum_unique: MILP solve failed ({first.message}).")
+        raise RuntimeError(
+            f"is_clustering_optimum_unique: MILP solve failed ({first.message})."
+        )
     z_first = np.round(first.x)
     obj_first = -first.fun
 
@@ -206,7 +195,9 @@ def is_clustering_optimum_unique(edge: np.array) -> bool:
     P = len(pairs)
     cut_row = np.where(z_first > 0.5, 1.0, -1.0)
     cut_rhs = float(np.sum(z_first > 0.5)) - 1.0
-    constraints = list(constraints) + [LinearConstraint(cut_row.reshape(1, P), -np.inf, cut_rhs)]
+    constraints = list(constraints) + [
+        LinearConstraint(cut_row.reshape(1, P), -np.inf, cut_rhs)
+    ]
 
     second = milp(c, integrality=integrality, bounds=bounds, constraints=constraints)
     if not second.success:
@@ -220,10 +211,11 @@ def _binary_entropy(p: float, eps: float = 1e-12) -> float:
     return float(-p * np.log(p) - (1 - p) * np.log(1 - p))
 
 
-# Per-cluster max-entropy representative (beta term's theta^i): the point
-# closest to 0.5 inside the cluster's joint intersection [L,R], guaranteed
-# non-empty by Helly whenever `labels` came from cluster_milp.
-def cluster_representative_thetas(rows_min: list, rows_max: list, labels: np.array) -> dict:
+# Per-cluster max-entropy representative (the theta^i in Eq. eq:global_opt's
+# second term): the point closest to 0.5 inside the cluster's joint interval.
+def cluster_representative_thetas(
+    rows_min: list, rows_max: list, labels: np.array
+) -> dict:
     reps = {}
     for lab in np.unique(labels):
         idx = np.where(labels == lab)[0]
@@ -233,18 +225,15 @@ def cluster_representative_thetas(rows_min: list, rows_max: list, labels: np.arr
     return reps
 
 
-# sum_i H(theta^i), the beta term: every CLIENT contributes its own
-# cluster's representative entropy once, so a cluster of size k contributes
-# k times that value (the sum is over clients, not over distinct clusters).
+# sum_i H(theta^i): every client contributes its own cluster's entropy
+# once, so a cluster of size k contributes k times that value.
 def total_entropy(rows_min: list, rows_max: list, labels: np.array) -> float:
     reps = cluster_representative_thetas(rows_min, rows_max, labels)
     return sum(_binary_entropy(reps[lab][0]) for lab in labels)
 
 
-# Connected components of the "z=1" edges give cluster labels directly: the
-# transitivity constraints in cluster_milp make same-label membership a
-# genuine equivalence relation (no risk of a non-clique component here,
-# unlike running connected components on the raw intersection graph).
+# Connected components of the "z=1" edges give cluster labels directly:
+# transitivity already makes same-label membership a true equivalence.
 def _labels_from_pairs(E: int, pairs: list, same: np.array) -> np.array:
     parent = list(range(E))
 
@@ -269,10 +258,8 @@ def _labels_from_pairs(E: int, pairs: list, same: np.array) -> np.array:
     return labels
 
 
-# Naive point-estimate baseline: exact 1-D k-means (WCSS-optimal) over the
-# clients' scalar MLEs, given the true cluster count k as an oracle (a
-# conservative advantage MOSAIC itself does not get). Plain O(n^2 k) DP,
-# not the "cut the k-1 largest gaps" heuristic (see test_global_opt.py).
+# Naive MLE baseline: exact 1-D k-means (WCSS-optimal) via O(n^2 k) DP,
+# given the true cluster count k as an oracle.
 def cluster_1d_wcss_optimal(values: np.array, k: int) -> np.array:
     values = np.asarray(values, dtype=float)
     n = len(values)
@@ -293,9 +280,8 @@ def cluster_1d_wcss_optimal(values: np.array, k: int) -> np.array:
         s, ss = S[j] - S[i], SS[j] - SS[i]
         return ss - s * s / (j - i)
 
-    # dp[j] = optimal WCSS partitioning v[:j] into `c` clusters (rolling over
-    # c=1..k); back[c][j] = the last cluster's start index, for backtracking
-    # the cut points once c reaches k.
+    # dp[j] = optimal WCSS partitioning v[:j] into `c` clusters; back[c][j]
+    # is the last cluster's start index, for backtracking once c reaches k.
     dp = [0.0] + [seg_wcss(0, j) for j in range(1, n + 1)]  # c=1
     back = [[0] * (n + 1)]
     for c in range(2, k + 1):
@@ -328,9 +314,8 @@ def cluster_1d_wcss_optimal(values: np.array, k: int) -> np.array:
     return labels
 
 
-# Pairwise same/different confusion counts (TP/FP/FN/TN) for one mechanism,
-# over all client pairs. Summed (not averaged) across mechanisms before
-# computing P/R/F1: a network-wide MICRO average over individual pairs.
+# Pairwise same/different confusion counts (TP/FP/FN/TN) for one mechanism.
+# Summed (not averaged) across mechanisms for a network-wide micro average.
 def pairwise_confusion(true_labels: np.array, pred_labels: np.array) -> tuple:
     E = len(true_labels)
     iu = np.triu_indices(E, k=1)
@@ -357,10 +342,8 @@ def precision_recall_f1(tp: int, fp: int, fn: int) -> tuple:
     return precision, recall, f1
 
 
-# ARI/AMI are properties of a pair of partitions of the SAME item set, so
-# (unlike pairwise P/R/F1) they cannot be pooled across mechanisms: each
-# mechanism has its own true partition. Computed per mechanism, then meant
-# to be MACRO-averaged (plain mean) across mechanisms by the caller.
+# ARI/AMI compare whole partitions, so they cannot be pooled across
+# mechanisms; the caller macro-averages (plain mean) across mechanisms.
 def ari_ami(true_labels: np.array, pred_labels: np.array) -> tuple:
     return (
         adjusted_rand_score(true_labels, pred_labels),
@@ -368,10 +351,8 @@ def ari_ami(true_labels: np.array, pred_labels: np.array) -> tuple:
     )
 
 
-# Convenience: the full per-mechanism-row picture (ground truth, predicted
-# clusters via the full lexicographic procedure, edge graph) for one
-# (var, row) from a given credal-set source ("cn" for local IDM,
-# "cn_mosaic" for the MOSAIC-updated set), across all E clients.
+# Full per-mechanism picture (ground truth, predicted clusters, edge graph)
+# for one (var, row), from a given credal-set attribute across E clients.
 def evaluate_mechanism(clients: dict, var: str, row: int, cn_attr: str) -> dict:
     E = len(clients)
     rows_min, rows_max = [], []
@@ -391,9 +372,8 @@ def evaluate_mechanism(clients: dict, var: str, row: int, cn_attr: str) -> dict:
     return {"true_labels": true_labels, "pred_labels": pred_labels, "edge": edge}
 
 
-# Same as evaluate_mechanism, but for the naive MLE point-estimate baseline
-# (see cluster_1d_wcss_optimal): no credal sets involved, just each client's
-# own exact MLE for this row's category 0.
+# Same as evaluate_mechanism, but for the naive MLE baseline: no credal
+# sets involved, just each client's own exact MLE for this row.
 def evaluate_mechanism_mle(clients: dict, var: str, row: int) -> dict:
     E = len(clients)
     values = np.array(
@@ -409,9 +389,8 @@ def evaluate_mechanism_mle(clients: dict, var: str, row: int) -> dict:
     return {"true_labels": true_labels, "pred_labels": pred_labels}
 
 
-# Iterates every (var, row) mechanism of the network once; the caller
-# supplies which client and which row-count-per-var (both cheaply derived
-# from any one client's BN, since the graph structure is shared).
+# Lists every (var, row) mechanism of the network once, from any one
+# client's BN since the graph structure is shared across clients.
 def all_mechanisms(bn) -> list:
     from src.utils import get_parent_confs
 

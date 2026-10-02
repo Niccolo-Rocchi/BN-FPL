@@ -1,15 +1,10 @@
 """
 Tests for exp_local.py: the full-grid local learning & update pipeline.
 
-exp(config, n, rep) is fully self-contained (no worker-global state, so it
-is called directly here with an explicit config, no pool/initializer
-needed) and returns (row, models, task_id): `row` is the JSD/containment
-summary dict (destined for one line of df_tot.csv), `models` is a dict of
-raw CPT snapshots (destined for its own results/models/<task_id>.pkl file,
-empty when config["save_models"] is False, which conf_local.yaml sets for a
-plain local-learning-and-update sweep; exp()'s own fallback, if the key is
-missing entirely, is True), and `task_id` is the (n_clients, ess,
-prob_shift, alpha, size, rep) key both are filed under.
+exp(config, n, rep) is fully self-contained, so it is called directly
+here with an explicit config. It returns (row, models, task_id): `row` is
+one df_tot.csv line, `models` is a dict of CPT snapshots (empty unless
+save_models is True), and `task_id` identifies both.
 """
 
 import copy
@@ -91,9 +86,8 @@ def test_exp_returns_expected_schema_and_sane_values():
 
 
 def test_gt_contained_matches_direct_computation():
-    # Cross-check exp()'s idm_gt_contained/mos_w{w}_gt_contained against
-    # gt_containment_frac called directly on the SAME live credal sets
-    # (rebuilt from the same seed), rather than trusting the wiring blindly.
+    # Cross-check exp()'s own gt_contained values against gt_containment_frac
+    # called directly on the same, independently rebuilt credal sets.
     config = BASE_CONFIG
     np.random.seed(hash((50, 0)) % (2**32))
     gum.initRandom(hash((50, 0)) % (2**32))
@@ -125,9 +119,8 @@ def test_gt_contained_matches_direct_computation():
 
 @pytest.mark.parametrize("ess", [1, 2, 5, 10, 20])
 def test_idm_min_never_exceeds_mle(ess):
-    # Regression test: IDM's local credal interval always contains the MLE
-    # for any ess > 0, so idm_min must never exceed row["mle"] (previously
-    # a pure Monte Carlo estimate that could miss it for a wide credal set).
+    # Regression test: IDM's credal interval always contains the MLE, so
+    # idm_min must never exceed row["mle"].
     config = dict(BASE_CONFIG, n_clients=2, prob_shift=0.0, ess=ess, n_bns=50)
     for n in (20, 100, 300):
         row, _, _ = exp_mod.exp(config, n, rep=0)
@@ -136,8 +129,7 @@ def test_idm_min_never_exceeds_mle(ess):
 
 def test_exp_models_snapshot_is_well_formed():
     # Each variable's snapshot is self-describing: {"cpt", "parents",
-    # "labels"} (see snapshot_cpts), not a bare array, so a reader never has
-    # to reconstruct a gum.BayesNet to know what each row/column means.
+    # "labels"}, not a bare array.
     row, models, task_id = exp_mod.exp(BASE_CONFIG, 50, rep=0)
 
     assert set(models.keys()) == EXPECTED_MODEL_KEYS
@@ -163,9 +155,8 @@ def test_exp_models_snapshot_is_well_formed():
 
 
 def test_row_fieldnames_matches_row_schema():
-    # main() writes df_tot.csv incrementally with csv.DictWriter(fieldnames=
-    # ROW_FIELDNAMES), which raises if a row's keys don't match exactly;
-    # this locks that invariant as a fast, direct test.
+    # main()'s csv.DictWriter raises if a row's keys don't match
+    # ROW_FIELDNAMES exactly; this locks that invariant directly.
     assert set(exp_mod.ROW_FIELDNAMES) == EXPECTED_ROW_KEYS
     assert len(exp_mod.ROW_FIELDNAMES) == len(set(exp_mod.ROW_FIELDNAMES))
 
@@ -224,11 +215,8 @@ def test_check_unique_task_ids_passes_for_a_normal_grid():
 
 
 def test_check_unique_task_ids_raises_on_duplicate_grid_value():
-    # Regression test for the exact failure mode this check exists to catch:
-    # a duplicate value inside one grid hyperparameter list (e.g. a typo'd
-    # `ess: [1, 1]` in conf_local.yaml) makes build_tasks silently emit the same
-    # task_id twice, which would otherwise make the second task's CSV row /
-    # model file silently overwrite the first's.
+    # Regression test: a duplicate value in one grid list makes build_tasks
+    # silently emit the same task_id twice, overwriting the first's output.
     config = dict(
         BASE_CONFIG,
         n_clients=[5],
@@ -253,9 +241,8 @@ def test_exp_works_for_any_client_num(client_num):
 
 
 def test_different_reps_produce_different_data():
-    # Regression test: exp() must reseed per (n, rep) task and regenerate the
-    # whole DGP for each repetition (before the fix, forked worker processes
-    # inherited an identical RNG state, producing identical "mle" values).
+    # Regression test: exp() must reseed per (n, rep) task, not inherit the
+    # same RNG state across forked workers.
     row0, _, _ = exp_mod.exp(BASE_CONFIG, 40, rep=0)
     row1, _, _ = exp_mod.exp(BASE_CONFIG, 40, rep=1)
 
@@ -276,14 +263,8 @@ def test_same_task_is_reproducible():
 
 
 def test_different_hyperparameter_combinations_do_not_cross_contaminate():
-    # exp() is fully stateless (no worker-global config): this is what makes
-    # it safe for main()'s flattened pool to freely interleave tasks from
-    # DIFFERENT hyperparameter combinations across all workers at once,
-    # instead of processing one combination at a time. Simulated here by
-    # interleaving two configs that differ in n_clients (so they produce
-    # differently-sized `clients` dicts) for the SAME (n, rep): each call
-    # must reflect only its own config, regardless of call order, and must
-    # be independently reproducible.
+    # exp() is fully stateless: interleaved calls with different configs
+    # for the same (n, rep) must each reflect only their own config.
     config_a = dict(BASE_CONFIG, n_clients=5)
     config_b = dict(BASE_CONFIG, n_clients=9)
 
@@ -302,11 +283,8 @@ def test_different_hyperparameter_combinations_do_not_cross_contaminate():
 
 
 def test_build_tasks_covers_every_combination_exactly_once():
-    # Direct test for the CSV-attribution concern: every (hyperparameter
-    # combination, size, rep) must appear in the flattened task list exactly
-    # once, each carrying its OWN correctly-resolved hyperparameter values
-    # (not e.g. always the last combination's, a classic late-binding-
-    # closure bug this dict-per-task design avoids).
+    # Every (combination, size, rep) must appear exactly once in the
+    # flattened task list, each carrying its own resolved hyperparameters.
     config = dict(
         BASE_CONFIG,
         n_clients=[5, 9],
@@ -343,9 +321,8 @@ def test_build_tasks_covers_every_combination_exactly_once():
 
 
 def test_hyperparameter_combos_deduplicates_alpha_only_for_prob_shift_zero():
-    # alpha is irrelevant when prob_shift == 0.0 (perturb_bn_params never
-    # perturbs anything at prob=0): sweeping the full alpha list there would
-    # produce redundant, byte-identical tasks per (n_clients, ess) combo.
+    # alpha is irrelevant at prob_shift=0.0, so sweeping it there would only
+    # produce redundant, byte-identical tasks.
     config = dict(
         BASE_CONFIG,
         n_clients=[5],
@@ -363,18 +340,15 @@ def test_hyperparameter_combos_deduplicates_alpha_only_for_prob_shift_zero():
     assert len(nonzero_combos) == len(config["alpha"]) == 3
     assert sorted(c["alpha"] for c in nonzero_combos) == sorted(config["alpha"])
 
-    # build_tasks (and hence main()'s printed combo count) must reflect the
-    # same, deduplicated total, not the naive n_clients x ess x prob_shift
-    # x alpha product.
+    # build_tasks must reflect the same deduplicated total, not the naive
+    # full product.
     tasks = exp_mod.build_tasks(dict(config, n_repetitions=1), sizes=[10])
     assert len(tasks) == len(combos) == 4  # 1 (prob_shift=0) + 3 (prob_shift=0.5)
 
 
 def test_prob_shift_zero_ignores_alpha():
-    # Direct empirical confirmation of the premise behind the dedup above:
-    # at prob_shift=0.0, every client is an unperturbed copy of bn_base
-    # regardless of alpha, so exp()'s entire result must be identical no
-    # matter which alpha value is used.
+    # At prob_shift=0.0, every client is an unperturbed copy of bn_base
+    # regardless of alpha, so exp()'s result must not depend on it.
     config_a = dict(BASE_CONFIG, prob_shift=0.0, alpha=5)
     config_b = dict(BASE_CONFIG, prob_shift=0.0, alpha=500)
 

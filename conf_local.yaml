@@ -1,5 +1,4 @@
-## Configuration file for exp_local.py (full n_clients x ess x prob_shift x alpha
-## x sample-size grid): the local learning & update phase.
+## Configuration file for exp_local.py
 
 # Grid hyperparameters: each is a list, swept as a cartesian product (one
 # full sweep over s_sizes x n_repetitions x weighting schemas per

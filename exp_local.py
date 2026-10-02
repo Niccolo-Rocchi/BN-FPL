@@ -24,14 +24,12 @@ n_jobs = max(1, len(os.sched_getaffinity(0)) - 1)
 # every run, so their JSD curves can be compared on the same plot.
 WEIGHTING_SCHEMES = (1, 2, 3)
 
-# Hyperparameters swept as a grid (cartesian product): each is a list in
-# conf_local.yaml, even when it holds a single value. One full (s_sizes x
-# n_repetitions x WEIGHTING_SCHEMES) sweep is run per combination.
+# Hyperparameters swept as a grid, each a list in conf_local.yaml even
+# when it holds a single value.
 GRID_KEYS = ("n_clients", "ess", "prob_shift", "alpha")
 
-# Exact set of keys every `exp()` call's `row` carries, fixed by
-# WEIGHTING_SCHEMES/GRID_KEYS above. Used as the CSV header and to check
-# each row's schema before it is written.
+# Exact set of keys every `exp()` call's `row` carries; used as the CSV
+# header and to check each row's schema before it is written.
 ROW_FIELDNAMES = (
     list(GRID_KEYS)
     + ["size", "rep", "mle", "idm_min", "idm_mean", "idm_max"]
@@ -75,9 +73,8 @@ def exp(config, n, rep) -> tuple:
     worker-global state, so tasks from different hyperparameter
     combinations can be freely interleaved across workers.
     """
-    # Each (n, rep) task needs its own independent random stream: forked
-    # worker processes inherit identical RNG state, so without reseeding
-    # here different repetitions could silently produce identical data.
+    # Each (n, rep) task needs its own seed: forked workers inherit the
+    # same RNG state, so without this, repetitions could repeat.
     task_seed = hash((n, rep)) % (2**32)
     np.random.seed(task_seed)
     gum.initRandom(task_seed)
@@ -110,9 +107,8 @@ def exp(config, n, rep) -> tuple:
     row["size"] = n
     row["rep"] = rep
 
-    # Archived models for this task (see snapshot_cpts): MLE, local IDM
-    # credal set, and per-schema prior and MOSAIC-updated credal set.
-    # Skipped entirely (not just unused) when save_models is False.
+    # Archived models for this task: MLE, local IDM credal set, and each
+    # schema's prior and updated credal set. Skipped when save_models is False.
     models = {}
 
     # MLE and IDM (no update): identical across weighting schemas, computed once.
@@ -133,15 +129,13 @@ def exp(config, n, rep) -> tuple:
         models["idm_max"] = snapshot_cpts(client_exp.cn.bn_max)
 
     # Empirical check of "Reliability of credal sets" (cap6_extract.tex,
-    # `as:credal`): how often bn_base's own value is contained in this
-    # credal set. Computed from the live bn_min/bn_max, not through `models`.
+    # `as:credal`): how often bn_base's value falls inside this credal set.
     row["idm_gt_contained"] = gt_containment_frac(
         bn_base, client_exp.cn.bn_min, client_exp.cn.bn_max
     )
 
-    # MOSAIC, once per weighting schema. The intersection fraction is the
-    # same across schemas (it doesn't depend on the weighting formula);
-    # kept from weighting=2, where it's most directly interpretable.
+    # MOSAIC, once per weighting schema; the intersection fraction is kept
+    # from weighting=2, where it is most directly interpretable.
     intersection_frac = None
     for w in WEIGHTING_SCHEMES:
         client_exp.reset_prior()
@@ -197,7 +191,12 @@ def hyperparameter_combos(config) -> list:
         alpha_values = [config["alpha"][0]] if prob_shift == 0.0 else config["alpha"]
         for alpha in alpha_values:
             combos.append(
-                {"n_clients": n_clients, "ess": ess, "prob_shift": prob_shift, "alpha": alpha}
+                {
+                    "n_clients": n_clients,
+                    "ess": ess,
+                    "prob_shift": prob_shift,
+                    "alpha": alpha,
+                }
             )
     return combos
 
@@ -328,7 +327,9 @@ def run_grid(
         csv_f.flush()
 
         ctx = mp.get_context("fork")
-        with ctx.Pool(processes=n_workers, maxtasksperchild=max_tasks_per_child) as pool:
+        with ctx.Pool(
+            processes=n_workers, maxtasksperchild=max_tasks_per_child
+        ) as pool:
             for row, models, task_id in pool.imap_unordered(task_fn, tasks):
                 if row is None:
                     n_failed += 1
@@ -353,9 +354,8 @@ def run_grid(
 
                 if save_models and models:
                     model_path = models_dir / _model_filename(task_id)
-                    # Append, not replace-suffix: filenames already contain
-                    # dots from float hyperparameters, which with_suffix()
-                    # would misparse.
+                    # Append, not replace-suffix: filenames already have
+                    # dots from float hyperparameters.
                     tmp_path = model_path.with_name(model_path.name + ".tmp")
                     with open(tmp_path, "wb") as mf:
                         pickle.dump(models, mf)

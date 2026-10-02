@@ -5,4 +5,5 @@ results*/
 .pytest_cache/
 *.pyc
 *.svg
+*.png
 *.tex

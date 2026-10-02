@@ -1,37 +1,15 @@
-## Configuration file for exp_global.py: the server-side global
-## optimization phase (cap6_extract.tex, Sec. "Global Optimization",
-## Eq. eq:global_opt), solved via the lexicographic alpha >> beta
-## procedure (clustering of clients per mechanism X|pi_X, entropy
-## breaking ties only; see src/global_opt.py), evaluated against the
-## ground-truth partition induced by perturb_bn_params' own resampling mask.
+## Configuration file for exp_global.py.
 
 # Grid hyperparameters: each is a list, swept as a cartesian product. A
 # single value still needs list syntax, e.g. `n_clients: [10]`.
-n_clients: [10]            # Number of clients. Unlike exp_local.py, ALL of them
-                            # (including client 0) are perturbed symmetrically
-                            # (see exp_global.py's init_clients), since the
-                            # global phase's ground truth is pairwise
-                            # (mask_i AND mask_j), not tied to a fixed anchor.
+n_clients: [10]            # Number of clients. 
 ess: [2, 10, 50, 100]  # Equivalent sample size for local IDM.
-                            # An exploratory sweep (results_global_explore/,
-                            # not committed) found that what drives MOSAIC's
-                            # clustering gain over the no-update ablation is
-                            # NOT ess in isolation, but ess RELATIVE TO the
-                            # sample size N below: gain is negative in a
-                            # "valley" around ess ~ N/10-N/20 (e.g. N=200,
-                            # ess=10 -> ARI -0.18), and clearly positive once
-                            # ess is comparable to or exceeds N (e.g. N=200,
-                            # ess=100 -> ARI +0.13; N=500, ess=200 -> +0.13).
+      
 prob_shift: [0.5]           # Fixed: 0 would make every mechanism's ground
                             # truth a single giant cluster, trivializing the
                             # clustering task.
 alpha: [0.1, 1]              # Dirichlet concentration for parameter perturbation.
-                            # The same exploratory sweep found the ess/N
-                            # relationship above holds essentially unchanged
-                            # across alpha in [0.1, 10] (near-zero correlation
-                            # between alpha and the gain), so alpha is not
-                            # swept here; adjust if that should be checked
-                            # again at this specific ess/N grid.
+                            
 
 s_sizes:
   min: 5

@@ -230,13 +230,6 @@ class PriorCPT(CN_CPT):
 
         I_sum = np.sum(I, axis=-1, keepdims=True)
         vacuous_rows = I_sum[:, 0] == 0
-        if np.any(vacuous_rows):
-            # warnings.warn(
-            #     f"No client contributes to the prior for variable {self.var} "
-            #     f"in {int(np.sum(vacuous_rows))} parent configuration(s); "
-            #     "falling back to a vacuous prior there."
-            # )
-            pass
 
         W = np.divide(I, I_sum, out=np.zeros_like(I, dtype=float), where=I_sum != 0)
         cpts_weighted = cpts * W[None, :, None, :]
@@ -316,9 +309,8 @@ class PriorCN(CN):
 
         return self.cpts[var].intersection_frac
 
-    # Computes every prior CPT, then returns the median (across variables
-    # and parent configurations) fraction of candidate clients whose credal
-    # set intersects the target's, regardless of `weighting`.
+    # Computes every prior CPT, then returns the network-wide median
+    # fraction of candidates intersecting the target, regardless of `weighting`.
     def compute(self, clients_list: list, weighting: int) -> float:
 
         fracs = []
@@ -455,9 +447,8 @@ class Client:
 
         prior_cpt_min, prior_cpt_max = self.prior_cn.cpt(var)
 
-        # Uses the exact MLE (`self.bn_mle`), not the smoothed `self.bn`: it
-        # must match `idmLearning`'s own counts exactly for K^{e+} = K^e
-        # under a vacuous prior.
+        # Uses the exact MLE, not the smoothed `self.bn`, so a vacuous
+        # prior leaves the CPT unchanged (K^{e+} = K^e).
         cpt_mle = get_tabular_cpt(self.bn_mle.cpt(var))
         cpt_counts = get_tabular_cpt(self.bn_counts.cpt(var))
         ess = self.ess
@@ -509,9 +500,8 @@ class Client:
             self.mosaic_cn_cpt(var)
 
 
-# Minimal, independent snapshot of a Client, holding only what
-# PriorCPT.compute reads from a prior candidate: gt, cn, and bn_mle.
-# Deliberately not a full Client deep copy; see PriorCPT.set_clients.
+# Minimal snapshot of a Client (gt, cn, bn_mle only), not a full deep
+# copy, to keep PriorCPT.set_clients cheap. See that method for why.
 def _client_snapshot(client: "Client") -> "Client":
     snap = Client.__new__(Client)
     snap.label = None

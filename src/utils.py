@@ -235,9 +235,8 @@ def jsd_bounds_from_samples(B, sampled_bns, target="marginals"):
     }
 
 
-# JSD(bn_base, .) statistics (min, mean, max) over a credal net's strong
-# extension. `max` is exact (attained at a vertex); `min` and `mean` are
-# approximated by sampling `n_bns` BNs.
+# JSD(bn_base, .) stats over a credal net: max is exact (at a vertex),
+# min/mean are approximated by sampling `n_bns` BNs.
 def jsd_credal_stats(bn_base, bn_min, bn_max, n_bns, target="joint") -> dict:
 
     vertices_bns = vertices_cn(bn_min, bn_max, n_bns=None)
@@ -253,9 +252,8 @@ def jsd_credal_stats(bn_base, bn_min, bn_max, n_bns, target="joint") -> dict:
     }
 
 
-# Plain-numpy snapshot of every CPT in `bn`. Stores "parents"/"labels"
-# alongside "cpt" so row/column order is never ambiguous: cpt.topandas()
-# sorts labels alphabetically, this follows pyagrum's native order.
+# Plain-numpy snapshot of every CPT in `bn`, with "parents"/"labels" kept
+# alongside so row/column order is never ambiguous.
 def snapshot_cpts(bn: gum.BayesNet) -> dict:
     return {
         var: {
@@ -267,9 +265,8 @@ def snapshot_cpts(bn: gum.BayesNet) -> dict:
     }
 
 
-# Reads a value back out of a snapshot_cpts() entry: P(X=. | parents), as a
-# 1D array ordered like `entry["labels"]`. Matches against the entry's own
-# stored "parents" list, never against a freshly-loaded BN's own order.
+# Reads P(X=. | parents) back out of a snapshot_cpts() entry, as a 1D
+# array ordered like `entry["labels"]`.
 def lookup_cpt_row(entry: dict, parents: dict = None) -> np.array:
     if parents is None:
         if entry["parents"] != [None]:
@@ -364,9 +361,8 @@ def get_kl(bn: gum.BayesNet, gt: gum.BayesNet, var, parents):
     return kl_sym
 
 
-# Builds the BN of empirical counts from `data`. `bn` supplies only the
-# structure (names, parents, labels, CPT row/column order); its CPT
-# values are never read, so the result depends only on `data`.
+# Builds the BN of empirical counts from `data`; `bn` only supplies the
+# structure, its own CPT values are never read.
 def get_bn_counts(bn, data):
 
     # Init the BN
@@ -384,10 +380,8 @@ def get_bn_counts(bn, data):
             index_df = pd.DataFrame(parent_confs)
             parent_cols = index_df.columns.tolist()
 
-            # Full (parent configuration x node value) grid, in the CPT's own
-            # row/column order: `node_labels * n_rows` tiles the node's
-            # labels, aligning with `index_df`'s rows repeated `var_size`
-            # times each.
+            # Full (parent configuration x node value) grid: node_labels is
+            # tiled against index_df's rows, each repeated var_size times.
             full_grid = index_df.loc[index_df.index.repeat(var_size)].reset_index(
                 drop=True
             )
@@ -412,9 +406,8 @@ def get_bn_counts(bn, data):
     return bn_counts
 
 
-# Exact (unsmoothed) MLE BN from a BN of counts: P(X=x|pi_X) = N[x,pi_X] /
-# N[pi_X], row by row. Use this, not `learn_bn_params`'s smoothed output,
-# whenever the true theta_hat is needed.
+# Exact (unsmoothed) MLE BN from a BN of counts: P(X=x|pi_X)=N[x,pi_X]/N[pi_X].
+# Use this, not `learn_bn_params`'s smoothed output, for the true theta_hat.
 def mle_bn_from_counts(bn_counts: gum.BayesNet) -> gum.BayesNet:
 
     bn = gum.BayesNet(bn_counts)
@@ -474,8 +467,7 @@ def get_cpt_shape(cpt) -> tuple:
     return n_rows, var_size
 
 
-# Parent configurations of `var` in `bn`, in pyagrum's native row order
-# (matches get_tabular_cpt, not cpt.topandas()'s alphabetical order).
+# Parent configurations of `var` in `bn`, in pyagrum's native row order.
 # Returns [None] for a root variable.
 def get_parent_confs(bn: gum.BayesNet, var: str) -> list:
 
@@ -907,10 +899,8 @@ def centroid_cset(vec_min, vec_max) -> np.array:
 # Get the credal set vertices
 def vertices_cset(vec_min, vec_max) -> np.array:
 
-    # Degenerate case. Shape is kept consistent with the general case (a 2D
-    # array of shape (n_vertices, n_par), here n_vertices=1) since callers
-    # (e.g. `check_intersection`, `ran_cset`, `centroid_cset`, `mne_cset`)
-    # index vertices by row.
+    # Degenerate case: kept 2D (n_vertices=1) since callers index vertices
+    # by row.
     if np.all(vec_min == vec_max):
         return np.atleast_2d(vec_min)
 
@@ -1045,9 +1035,8 @@ def sample_from_cn(bn_min, bn_max, n_bns: int) -> list:
     # Get the DAG and extreme BNs
     dag = gum.BayesNet(bn_min)
 
-    # bn.names() is a Python set with per-process randomized order; sort
-    # it so each variable gets the same seed_offset, hence the same
-    # sampling seed, regardless of which process runs this.
+    # bn.names() order is per-process random; sort so each variable gets
+    # the same seed_offset regardless of which process runs this.
     names = sorted(dag.names())
 
     # For each variable ...
@@ -1206,9 +1195,8 @@ def check_consistency(bn, bn_min, bn_max, verbose=False) -> int:
     return n_issues
 
 
-# Fraction of individual CPT entries (variable, parent-config, category)
-# where `bn_gt`'s own value is within [bn_min, bn_max]. Empirically checks
-# Definition "Reliability of credal sets" (cap6_extract.tex, `as:credal`).
+# Fraction of CPT entries where `bn_gt`'s value is within [bn_min, bn_max]
+# (Definition "Reliability of credal sets", cap6_extract.tex `as:credal`).
 def gt_containment_frac(
     bn_gt: gum.BayesNet, bn_min: gum.BayesNet, bn_max: gum.BayesNet
 ) -> float:
